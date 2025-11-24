@@ -53,31 +53,13 @@ class PolymarketScout(Component):
                 f"IF MATCH FOUND: Return JSON {{ \"match_found\": true, \"index\": 0, \"reason\": \"...\" }}"
             )
             try:
-                import requests
-                CHUTES_KEY = os.getenv("CHUTES_API_KEY")
-                if not CHUTES_KEY: return {"match_found": False}
-
-                url = "https://llm.chutes.ai/v1/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {CHUTES_KEY}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": "deepseek-ai/DeepSeek-R1-0528",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 1024,
-                    "temperature": 0.1, # Low temp for strict logic
-                    "stream": False
-                }
-                
-                response = requests.post(url, headers=headers, json=payload)
-                if response.status_code == 200:
-                    clean = response.json()["choices"][0]["message"]["content"]
-                    # Clean DeepSeek output
-                    import re
-                    clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL).strip()
-                    clean = clean.replace("```json", "").replace("```", "").strip()
-                    return json.loads(clean)
+                conn = http.client.HTTPSConnection("api.perplexity.ai")
+                payload = json.dumps({"model": "sonar", "messages": [{"role": "user", "content": prompt}]})
+                conn.request("POST", "/chat/completions", payload, headers)
+                res = conn.getresponse()
+                if res.status == 200:
+                    clean = json.loads(res.read().decode("utf-8"))["choices"][0]["message"]["content"]
+                    return json.loads(clean.replace("```json", "").replace("```", "").strip())
             except: pass
             return {"match_found": False}
 
@@ -153,32 +135,14 @@ class PolymarketScout(Component):
                     f"3. Related Keyword (e.g. 'Rockstar Games')\n"
                     f"Output strictly a comma-separated list. No quotes."
                 )
-                
-                import requests
-                CHUTES_KEY = os.getenv("CHUTES_API_KEY")
-                if CHUTES_KEY:
-                    url = "https://llm.chutes.ai/v1/chat/completions"
-                    headers_chutes = {
-                        "Authorization": f"Bearer {CHUTES_KEY}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "model": "deepseek-ai/DeepSeek-R1-0528",
-                        "messages": [{"role": "user", "content": prompt_terms}],
-                        "max_tokens": 1024,
-                        "temperature": 0.7,
-                        "stream": False
-                    }
-                    
-                    response = requests.post(url, headers=headers_chutes, json=payload)
-                    if response.status_code == 200:
-                        raw_terms = response.json()["choices"][0]["message"]["content"]
-                        # Clean DeepSeek output
-                        import re
-                        raw_terms = re.sub(r"<think>.*?</think>", "", raw_terms, flags=re.DOTALL).strip()
-                        
-                        search_candidates = [t.strip() for t in raw_terms.split(",") if len(t.strip()) > 2]
-                        logs.append(f"🧠 **Scout (DeepSeek):** Generated Search Terms: {search_candidates}")
+                conn = http.client.HTTPSConnection("api.perplexity.ai")
+                payload = json.dumps({"model": "sonar", "messages": [{"role": "user", "content": prompt_terms}]})
+                conn.request("POST", "/chat/completions", payload, headers)
+                res = conn.getresponse()
+                if res.status == 200:
+                    raw_terms = json.loads(res.read().decode("utf-8"))["choices"][0]["message"]["content"]
+                    search_candidates = [t.strip() for t in raw_terms.split(",") if len(t.strip()) > 2]
+                    logs.append(f"🧠 **Scout:** Generated Search Terms: {search_candidates}")
             except: pass
 
             # Loop through search terms until match found
