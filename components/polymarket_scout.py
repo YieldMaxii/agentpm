@@ -145,7 +145,7 @@ class PolymarketScout(Component):
             logs.append("🔄 **Scout:** Triggering Smart Global Search...")
             
             # HELPER: Get Search Variations
-            search_candidates = [slug.replace("-", " ")] # Default
+            search_candidates = [slug.replace("-", " ")] if slug else ["unknown"]  # Default
             try:
                 prompt_terms = (
                     f"Generate 3 distinct, short search terms for Polymarket to find markets about: '{user_query}'.\n"
