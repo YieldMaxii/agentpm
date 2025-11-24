@@ -31,7 +31,10 @@ class DeepResearcher(Component):
         # 3. Call Perplexity (Using 'sonar' model)
         import os
         from dotenv import load_dotenv
-        load_dotenv()
+        from pathlib import Path
+        # Load .env from project root
+        env_path = Path(__file__).parent.parent / '.env'
+        load_dotenv(dotenv_path=env_path)
         HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
         
         ai_score = 50

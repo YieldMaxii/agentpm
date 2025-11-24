@@ -52,7 +52,10 @@ class StrategyPlanner(Component):
             import requests
             import os
             from dotenv import load_dotenv
-            load_dotenv()
+            from pathlib import Path
+            # Load .env from project root
+            env_path = Path(__file__).parent.parent / '.env'
+            load_dotenv(dotenv_path=env_path)
             
             CHUTES_KEY = os.getenv("CHUTES_API_KEY")
             if not CHUTES_KEY:
