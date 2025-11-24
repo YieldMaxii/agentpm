@@ -49,28 +49,45 @@ class StrategyPlanner(Component):
         plan_json = {"domain": "General", "success_condition": "Unknown", "factors": [{"name": "General", "question": "Analyze market."}]}
 
         try:
-            conn = http.client.HTTPSConnection("api.perplexity.ai")
-            
+            import requests
             import os
             from dotenv import load_dotenv
             load_dotenv()
-            HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
             
-            payload = json.dumps({
-                "model": "sonar",
-                "messages": [{"role": "user", "content": query}]
-            })
-            headers = {'Authorization': f'Bearer {HARDCODED_KEY}', 'Content-Type': 'application/json'}
-            conn.request("POST", "/chat/completions", payload, headers)
-            res = conn.getresponse()
+            CHUTES_KEY = os.getenv("CHUTES_API_KEY")
+            if not CHUTES_KEY:
+                logs.append("❌ **Planner Error:** CHUTES_API_KEY not set.")
+                return Data(data={"logs": logs})
+
+            url = "https://llm.chutes.ai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {CHUTES_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "deepseek-ai/DeepSeek-R1-0528",
+                "messages": [{"role": "user", "content": query}],
+                "max_tokens": 1024,
+                "temperature": 0.7,
+                "stream": False
+            }
             
-            if res.status == 200:
-                content = json.loads(res.read().decode("utf-8"))["choices"][0]["message"]["content"]
+            response = requests.post(url, headers=headers, json=payload)
+            
+            if response.status_code == 200:
+                content = response.json()["choices"][0]["message"]["content"]
+                # DeepSeek might include <think> tags or markdown, clean it
                 clean = content.replace("```json", "").replace("```", "").strip()
+                # Remove potential <think>...</think> blocks if present (DeepSeek R1 feature)
+                import re
+                clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL).strip()
+                
                 plan_json = json.loads(clean)
                 
                 success_cond = plan_json.get("success_condition", "Undefined")
-                logs.append(f"🧠 **Planner:** Success Condition Defined: `{success_cond}`")
+                logs.append(f"🧠 **Planner (DeepSeek):** Success Condition Defined: `{success_cond}`")
+            else:
+                logs.append(f"❌ **Planner Error:** API {response.status_code} - {response.text}")
 
         except Exception as e:
             logs.append(f"❌ **Planner Error:** {str(e)}")
