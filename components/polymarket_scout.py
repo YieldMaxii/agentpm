@@ -73,11 +73,12 @@ class PolymarketScout(Component):
                 response = requests.post(url, headers=headers, json=payload)
                 if response.status_code == 200:
                     clean = response.json()["choices"][0]["message"]["content"]
-                    # Clean DeepSeek output
-                    import re
-                    clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL).strip()
-                    clean = clean.replace("```json", "").replace("```", "").strip()
-                    return json.loads(clean)
+                    # Clean DeepSeek output (with null safety)
+                    if clean:
+                        import re
+                        clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL).strip()
+                        clean = clean.replace("```json", "").replace("```", "").strip()
+                        return json.loads(clean)
             except: pass
             return {"match_found": False}
 

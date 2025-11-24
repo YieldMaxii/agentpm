@@ -6,8 +6,8 @@ import json
 import time
 
 class RecursiveResearcher(Component):
-    display_name = "Recursive Researcher (Hybrid)"
-    description = "Synthesizes data with Strict Probability Inversion."
+    display_name = "Recursive Researcher (DeepSeek Brain)"
+    description = "DeepSeek R1 directs research, using Perplexity as a search tool."
 
     inputs = [
         DataInput(name="plan_input", display_name="Research Plan"),
@@ -30,128 +30,138 @@ class RecursiveResearcher(Component):
         if "market_data" in input_data:
             market_data = input_data.get("market_data", {})
             plan = input_data.get("research_plan", {})
-            logs.append(f"🕒 **{timestamp}** - Researcher Received Plan for: '{market_data.get('event', 'Unknown')}'")
+            logs.append(f"🕒 **{timestamp}** - Researcher (DeepSeek) Started for: '{market_data.get('event', 'Unknown')}'")
         else:
             market_data = input_data
             plan = {"domain": "General", "questions": ["Analyze the market."]}
-            logs.append("⚠️ **Warning:** Strategy Planner skipped.")
         
         event = market_data.get("event", "Unknown Event")
-        odds = market_data.get("market_implied_prob", 0)
-        context = market_data.get("context", "") 
         user_query = input_data.get("original_query", "")
-        
-        factors = plan.get("factors", [])
-        # Backwards compatibility
-        if not factors and "questions" in plan:
-             factors = [{"name": "General", "question": q} for q in plan["questions"]]
-        domain = plan.get("domain", "General")
-        # We use the strict definition of "Winning" from the Planner
         success_cond = plan.get("success_condition", f"The event '{event}' happens.")
-
+        
+        # --- SETUP API KEYS ---
         import os
+        import requests
         from dotenv import load_dotenv
         load_dotenv()
-        HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
-        headers = {'Authorization': f'Bearer {HARDCODED_KEY}', 'Content-Type': 'application/json'}
+        
+        CHUTES_KEY = os.getenv("CHUTES_API_KEY")
+        PERPLEXITY_KEY = os.getenv("PERPLEXITY_API_KEY")
+        
+        if not CHUTES_KEY or not PERPLEXITY_KEY:
+            logs.append("❌ **Error:** Missing API Keys (CHUTES or PERPLEXITY).")
+            return Data(data={"logs": logs})
 
-        def search_sonar(query_text):
+        # --- HELPER: PERPLEXITY TOOL ---
+        def search_perplexity(query_text):
             try:
-                conn = http.client.HTTPSConnection("api.perplexity.ai")
-                payload = json.dumps({"model": "sonar", "messages": [{"role": "user", "content": query_text}]})
-                conn.request("POST", "/chat/completions", payload, headers)
-                res = conn.getresponse()
-                if res.status == 200:
-                    return json.loads(res.read().decode("utf-8"))["choices"][0]["message"]["content"]
+                url = "https://api.perplexity.ai/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {PERPLEXITY_KEY}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": "sonar",
+                    "messages": [{"role": "user", "content": query_text}]
+                }
+                res = requests.post(url, headers=headers, json=payload)
+                if res.status_code == 200:
+                    return res.json()["choices"][0]["message"]["content"]
+                return f"Error {res.status_code}: {res.text}"
+            except Exception as e: return f"Exception: {str(e)}"
+
+        # --- HELPER: DEEPSEEK BRAIN ---
+        def ask_deepseek(context_history):
+            try:
+                url = "https://llm.chutes.ai/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {CHUTES_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                system_prompt = (
+                    f"You are a Senior Research Analyst. Your goal is to determine the probability of: '{success_cond}'.\\n"
+                    f"You have access to a SEARCH tool via Perplexity. Use it to gather current facts and news.\\n\\n"
+                    f"PROTOCOL:\\n"
+                    f"1. If you need information, output EXACTLY: SEARCH: <your specific query>\\n"
+                    f"2. After receiving search results, you can request more searches or finish.\\n"
+                    f"3. When ready to conclude, output EXACTLY: FINISH: followed by valid JSON.\\n"
+                    f"   JSON must be: {{ \\\"probability\\\": <0-100>, \\\"reasoning\\\": \\\"...\\\", \\\"factors\\\": [{{\\\"name\\\":\\\"X\\\",\\\"weight\\\":10,\\\"score\\\":5,\\\"impact\\\":\\\"+10%\\\"}}] }}\\n\\n"
+                    f"EXAMPLES:\\n"
+                    f"- To search: SEARCH: GTA 6 release date official announcement\\n"
+                    f"- To finish: FINISH: {{\\\"probability\\\": 35, \\\"reasoning\\\": \\\"...\\\", \\\"factors\\\": [...]}}\\n\\n"
+                    f"START NOW. First, request a search for current information about this event."
+                )
+                
+                messages = [{"role": "system", "content": system_prompt}] + context_history
+                
+                payload = {
+                    "model": "deepseek-ai/DeepSeek-R1-0528",
+                    "messages": messages,
+                    "max_tokens": 1024,
+                    "temperature": 0.5,
+                    "stream": False
+                }
+                
+                res = requests.post(url, headers=headers, json=payload)
+                if res.status_code == 200:
+                    content = res.json()["choices"][0]["message"]["content"]
+                    # Clean DeepSeek output
+                    import re
+                    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                    return content
                 return "Error"
-            except: return "Error"
+            except Exception as e: return f"Error: {str(e)}"
 
-        findings = []
-        logs.append(f"🔎 **Researcher:** Checking Condition: *'{success_cond}'*...")
-
-        # --- PHASE 1: SEARCH ---
-        # --- PHASE 1: SEARCH ---
-        for f in factors:
-            q = f.get("question")
-            name = f.get("name")
-            # We search specifically for evidence PROVING or DISPROVING the condition
-            prompt = f"CONTEXT: {domain}. EVENT: {event}. FACTOR: {name}. QUESTION: {q}"
-            ans = search_sonar(prompt)
-            findings.append(f"**Factor: {name}**\nQ: {q}\nA: {ans[:500]}...")
-            logs.append(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ Analyzed: *{name}*")
-            time.sleep(1)
-
-        # --- PHASE 2: SYNTHESIS (STRICT MATH) ---
-        logs.append("🤔 **Researcher:** Applying Directional Logic...")
-        all_evidence = "\n\n".join(findings)
+        # --- MAIN LOOP ---
+        context = []
+        # Initial context
+        context.append({"role": "user", "content": f"Start research. Event: {event}. User Query: {user_query}. Plan Factors: {json.dumps(plan.get('factors', []))}"})
         
-        # THE FIX: Explicit Math Rules
-        synthesis_prompt = (
-            f"ROLE: Senior Macro Quant. \n"
-            f"USER QUESTION: '{user_query}'\n"
-            f"EVENT: {event}. \n"
-            f"WINNING CONDITION (YES): '{success_cond}'. \n"
-            f"EVIDENCE COLLECTED:\n{all_evidence}\n\n"
-            f"TASK: Calculate the Fair Value Probability that the WINNING CONDITION happens.\n"
-            f"IMPORTANT: Address the USER QUESTION directly in your reasoning.\n"
-            f"TASK: Derive the Fair Value Probability using a QUANTITATIVE WEIGHTED FACTOR MODEL.\n"
-            f"1. **ASSIGN WEIGHTS:** For each factor researched, assign a 'Weight' (0-10) based on its importance to the outcome.\n"
-            f"2. **SCORE SIGNALS:** Score the evidence for each factor from -10 (Strong Negative) to +10 (Strong Positive).\n"
-            f"3. **CALCULATE:** Use these scores to derive a final probability.\n"
-            f"   - *Example:* High Weight (10) + Strong Negative Score (-8) = Significant drag on probability.\n"
-            f"4. **BASE RATES:** Start with the historical base rate (e.g. 50/50 or historical average) and adjust based on the weighted scores.\n"
-            f"OUTPUT JSON: {{ \"status\": \"COMPLETE/INSUFFICIENT\", \"missing_query\": \"...\", \"probability_of_yes\": 5, \"factor_data\": [{{\"name\": \"Injuries\", \"weight\": 10, \"score\": -8, \"impact\": \"-20%\"}}], \"reasoning\": \"**Weighted Factor Analysis**...\" }}"
-        )
+        final_json = None
+        max_iterations = 3
         
-        raw_syn = search_sonar(synthesis_prompt)
-        
-        def parse_json_safely(text):
-            try:
-                start = text.find("{")
-                end = text.rfind("}") + 1
-                if start != -1 and end != -1:
-                    return json.loads(text[start:end])
-                return None
-            except: return None
+        for i in range(max_iterations):
+            logs.append(f"🧠 **DeepSeek (Iter {i+1}/{max_iterations}):** Thinking...")
+            response = ask_deepseek(context)
+            
+            # Parse Response
+            if response.startswith("SEARCH:"):
+                query = response.replace("SEARCH:", "").strip()
+                logs.append(f"🔎 **DeepSeek Requests:** *'{query}'*")
+                
+                # Execute Tool
+                search_result = search_perplexity(query)
+                logs.append(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ **Perplexity:** Found data.")
+                
+                # Feed back to Brain
+                context.append({"role": "assistant", "content": response})
+                context.append({"role": "user", "content": f"SEARCH RESULT: {search_result}"})
+                
+            elif "FINISH:" in response or "{" in response:
+                # Try to extract JSON
+                try:
+                    json_str = response[response.find("{"):response.rfind("}")+1]
+                    final_json = json.loads(json_str)
+                    logs.append("✅ **DeepSeek:** Research Complete.")
+                    break
+                except:
+                    logs.append("⚠️ **DeepSeek:** Malformed JSON. Retrying...")
+                    context.append({"role": "assistant", "content": response})
+                    context.append({"role": "user", "content": "Output valid JSON only for FINISH."})
+            else:
+                # Ambiguous response, treat as thought
+                logs.append(f"🤔 **DeepSeek:** {response[:100]}...")
+                context.append({"role": "assistant", "content": response})
 
-        data = parse_json_safely(raw_syn)
-        
-        if data:
-            status = data.get("status", "COMPLETE")
-            summary = data.get("reasoning", raw_syn)
-            ai_score = float(data.get("probability_of_yes", 50))
-            factor_data = data.get("factor_data", [])
-        else:
-            status = "COMPLETE"
-            summary = raw_syn.replace("```json", "").replace("```", "")
-            ai_score = 50.0
-            factor_data = []
-
-        # --- PHASE 3: SELF-CORRECTION ---
-        if status == "INSUFFICIENT":
-            missing = data.get("missing_query", "Unknown data")
-            logs.append(f"⚠️ **Reflection:** Missing: *'{missing}'*")
-            logs.append(f"🔄 **Self-Correction:** Triggering gap-fill search...")
-            
-            extra_ans = search_sonar(f"Find this data: {missing} for event {event}")
-            all_evidence += f"\n[GAP FILL]: {extra_ans}"
-            
-            recalc_prompt = f"Update Fair Value for '{success_cond}' using new data: {extra_ans}. REMEMBER: Bad news = Low Probability. Return JSON."
-            raw_final = search_sonar(recalc_prompt)
-            final_data = parse_json_safely(raw_final)
-            
-            if final_data:
-                ai_score = float(final_data.get("probability_of_yes", ai_score))
-                summary = final_data.get("reasoning", summary)
-                summary = f"**[🔄 Self-Correction Triggered]**\n*Initial research was insufficient. Found data: '{missing}'*\n\n" + summary
-            
-            logs.append(f"✅ **Correction:** Gap filled.")
-        else:
-            logs.append(f"✅ **Reflection:** Data sufficient.")
+        # Fallback if loop ends without JSON
+        if not final_json:
+            final_json = {"probability": 50, "reasoning": "Research inconclusive or loop limit reached.", "factors": []}
+            logs.append("⚠️ **System:** Loop limit reached. Using fallback.")
 
         return Data(data={
-            "research_summary": summary,
-            "model_confidence": ai_score,
-            "factor_data": factor_data,
+            "research_summary": final_json.get("reasoning", ""),
+            "model_confidence": float(final_json.get("probability", 50)),
+            "factor_data": final_json.get("factors", []),
             "logs": logs
         })
