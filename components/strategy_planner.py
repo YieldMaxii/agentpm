@@ -52,6 +52,8 @@ class StrategyPlanner(Component):
             conn = http.client.HTTPSConnection("api.perplexity.ai")
             
             import os
+            from dotenv import load_dotenv
+            load_dotenv()
             HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
             
             payload = json.dumps({

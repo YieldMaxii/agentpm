@@ -50,6 +50,8 @@ class RecursiveResearcher(Component):
         success_cond = plan.get("success_condition", f"The event '{event}' happens.")
 
         import os
+        from dotenv import load_dotenv
+        load_dotenv()
         HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
         headers = {'Authorization': f'Bearer {HARDCODED_KEY}', 'Content-Type': 'application/json'}
 

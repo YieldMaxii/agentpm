@@ -37,6 +37,8 @@ class MarketResolver(Component):
         try:
             conn = http.client.HTTPSConnection("api.perplexity.ai")
             import os
+            from dotenv import load_dotenv
+            load_dotenv()
             HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
             if not HARDCODED_KEY:
                 logs.append("❌ **Resolver Error:** PERPLEXITY_API_KEY not set.")

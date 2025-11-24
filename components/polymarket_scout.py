@@ -28,6 +28,8 @@ class PolymarketScout(Component):
         logs.append(f"🕒 **{timestamp}** - Scout Received: Slug='{slug}', Query='{user_query}'")
         
         import os
+        from dotenv import load_dotenv
+        load_dotenv()
         HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
         headers = {'Authorization': f'Bearer {HARDCODED_KEY}', 'Content-Type': 'application/json'}
         ua_headers = {"User-Agent": "Mozilla/5.0"}
