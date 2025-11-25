@@ -58,7 +58,7 @@ class SmartRouter(Component):
         )
         
         body = {
-            "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+            "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
             "max_tokens": 150,
