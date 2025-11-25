@@ -1,19 +1,18 @@
 from langflow.custom import Component
 from langflow.io import DataInput, Output
 from langflow.schema import Data
-import http.client
+import aiohttp
 import json
-import time
 import re
-import requests
 import os
 from dotenv import load_dotenv
 from pathlib import Path
 import datetime
 
+
 class RecursiveResearcher(Component):
-    display_name = "Recursive Researcher (DeepSeek Brain)"
-    description = "DeepSeek R1 directs research, using Perplexity as a search tool."
+    display_name = "Recursive Researcher (Bayesian Brain)"
+    description = "DeepSeek R1 with Bayesian updating. Compares new evidence against prior thesis."
 
     inputs = [
         DataInput(name="plan_input", display_name="Research Plan"),
@@ -23,7 +22,7 @@ class RecursiveResearcher(Component):
         Output(display_name="Deep Dossier", name="dossier", method="execute_research"),
     ]
 
-    def execute_research(self) -> Data:
+    async def execute_research(self) -> Data:
         if not self.plan_input: 
             return Data(data={
                 "research_summary": "No input provided",
@@ -34,20 +33,22 @@ class RecursiveResearcher(Component):
         
         # --- 1. UNPACK DATA ---
         input_data = self.plan_input.data
-        logs = input_data.get("logs", [])
+        logs = input_data.get("logs", []).copy()
         
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         
         if "market_data" in input_data:
             market_data = input_data.get("market_data", {})
             plan = input_data.get("research_plan", {})
-            logs.append(f"🕒 **{timestamp}** - Researcher (DeepSeek) Started for: '{market_data.get('event', 'Unknown')}'")
+            logs.append(f"🕒 **{timestamp}** - Researcher (Bayesian) Started for: '{market_data.get('event', 'Unknown')}'")
         else:
             market_data = input_data
             plan = {"domain": "General", "questions": ["Analyze the market."]}
         
         event = market_data.get("event", "Unknown Event")
         user_query = input_data.get("original_query", "")
+        history_context = input_data.get("history_context", "No previous analysis found.")
+        prior_probability = market_data.get("prior_probability")
         
         # Fallback logic: If event is unknown, research the user query directly
         if event == "Unknown Event" or not event:
@@ -69,8 +70,8 @@ class RecursiveResearcher(Component):
             logs.append("❌ **Error:** Missing API Keys (CHUTES or PERPLEXITY).")
             return Data(data={"logs": logs})
 
-        # --- HELPER: PERPLEXITY TOOL ---
-        def search_perplexity(query_text):
+        # --- HELPER: PERPLEXITY TOOL (Async) ---
+        async def search_perplexity(query_text):
             try:
                 url = "https://api.perplexity.ai/chat/completions"
                 headers = {
@@ -81,40 +82,19 @@ class RecursiveResearcher(Component):
                     "model": "sonar",
                     "messages": [{"role": "user", "content": query_text}]
                 }
-                res = requests.post(url, headers=headers, json=payload, timeout=30)
-                if res.status_code == 200:
-                    return res.json()["choices"][0]["message"]["content"]
-                return f"Error {res.status_code}: {res.text}"
-            except Exception as e: return f"Exception: {str(e)}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            return result["choices"][0]["message"]["content"]
+                        else:
+                            error_text = await response.text()
+                            return f"Error {response.status}: {error_text[:200]}"
+            except Exception as e:
+                return f"Exception: {str(e)}"
 
-        # --- HELPER: EXTRACT ANSWER FROM DEEPSEEK R1 ---
-        def extract_answer(raw_content):
-            if not raw_content:
-                return "", None
-            
-            thought_text = None
-            clean_content = ""
-            
-            if "</think>" in raw_content:
-                parts = raw_content.split("</think>", 1)
-                if len(parts) == 2:
-                    thought_part = parts[0]
-                    if "<think>" in thought_part:
-                        thought_text = thought_part.split("<think>", 1)[1].strip()
-                    else:
-                        thought_text = thought_part.strip()
-                    clean_content = parts[1].strip()
-            elif "<think>" in raw_content:
-                thought_text = raw_content.replace("<think>", "").strip()
-                clean_content = ""
-            else:
-                clean_content = raw_content.strip()
-            
-            clean_content = clean_content.replace("```json", "").replace("```", "").strip()
-            return clean_content, thought_text
-
-        # --- HELPER: DEEPSEEK BRAIN ---
-        def ask_deepseek(context_history, force_finish=False):
+        # --- HELPER: DEEPSEEK BRAIN (Async with Streaming) ---
+        async def ask_deepseek(context_history, force_finish=False):
             try:
                 url = "https://llm.chutes.ai/v1/chat/completions"
                 headers = {
@@ -122,51 +102,78 @@ class RecursiveResearcher(Component):
                     "Content-Type": "application/json"
                 }
                 
+                # ZERO-SHOT + BAYESIAN PROMPT
                 if force_finish:
-                    system_prompt = (
-                        f"Based on ALL the research gathered, provide a COMPREHENSIVE final assessment.\n\n"
-                        f"OUTPUT valid JSON with:\n"
-                        f"- probability: 0-100 (your confidence in the outcome)\n"
-                        f"- reasoning: A DETAILED 3-5 paragraph analysis covering:\n"
-                        f"  * Current market expectations and data sources\n"
-                        f"  * Key factors supporting the outcome\n"
-                        f"  * Key risks and counterarguments\n"
-                        f"  * Your overall assessment and confidence level\n"
-                        f"- factors: Array of key factors with name, weight (1-100), score (1-10), impact (+X% or -X%)\n\n"
-                        f"Example:\n"
-                        f'{{"probability": 67, "reasoning": "Based on CME FedWatch data showing 67% implied probability... [detailed analysis]", "factors": [{{"name": "Fed Guidance", "weight": 30, "score": 7, "impact": "+15%"}}]}}'
-                    )
+                    system_prompt = f"""TASK: Final Bayesian assessment for '{success_cond}'.
+
+{history_context}
+
+OUTPUT JSON:
+{{"probability": 0-100, "reasoning": "<3-5 paragraph analysis with delta explanation>", "factors": [{{"name": "X", "weight": 30, "score": 7, "impact": "+10%"}}], "delta_summary": "<What changed from prior>"}}"""
                 else:
-                    system_prompt = (
-                        f"You are a Senior Research Analyst tasked with determining the probability of: '{success_cond}'.\n\n"
-                        f"You have access to a SEARCH tool. Use it to gather comprehensive data.\n\n"
-                        f"COMMANDS:\n"
-                        f"- SEARCH: <specific query> - Search for information (be specific!)\n"
-                        f"- FINISH: <json> - When you have enough data, provide your final analysis\n\n"
-                        f"For FINISH, provide detailed JSON:\n"
-                        f'{{"probability": 0-100, "reasoning": "DETAILED multi-paragraph analysis...", "factors": [{{"name": "X", "weight": 30, "score": 7, "impact": "+10%"}}]}}\n\n'
-                        f"The reasoning should be 3-5 paragraphs covering: data sources, supporting factors, risks, and your overall assessment.\n\n"
-                        f"Start by searching for relevant current data."
-                    )
+                    system_prompt = f"""ROLE: Senior Quant Analyst
+EVENT: '{success_cond}'
+
+{history_context}
+
+COMMANDS:
+- SEARCH: <query> - Get current data
+- FINISH: {{json}} - Final assessment
+
+OUTPUT JSON on FINISH:
+{{"probability": 0-100, "reasoning": "<analysis>", "factors": [{{...}}], "delta_summary": "<what changed>"}}"""
                 
                 messages = [{"role": "system", "content": system_prompt}] + context_history
                 
-                payload = {
+                body = {
                     "model": "deepseek-ai/DeepSeek-R1-0528",
                     "messages": messages,
-                    "max_tokens": 8192,
-                    "temperature": 0.4,
-                    "stream": False
+                    "stream": True,
+                    "max_tokens": 4096,
+                    "temperature": 0.3
                 }
                 
-                res = requests.post(url, headers=headers, json=payload, timeout=300)
-                if res.status_code == 200:
-                    raw_content = res.json()["choices"][0]["message"]["content"]
-                    clean_content, thought_text = extract_answer(raw_content)
-                    return clean_content, raw_content, thought_text
-                else:
-                    return f"Error {res.status_code}", f"Error {res.status_code}", None
-                    
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=body, timeout=aiohttp.ClientTimeout(total=300)) as response:
+                        if response.status == 200:
+                            full_content = ""
+                            async for line in response.content:
+                                line = line.decode("utf-8").strip()
+                                if line.startswith("data: "):
+                                    data = line[6:]
+                                    if data == "[DONE]":
+                                        break
+                                    try:
+                                        chunk = json.loads(data)
+                                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        full_content += content
+                                    except json.JSONDecodeError:
+                                        continue
+                            
+                            # Extract answer from R1 format
+                            raw_content = full_content
+                            thought_text = None
+                            clean_content = ""
+                            
+                            if "</think>" in raw_content:
+                                parts = raw_content.split("</think>", 1)
+                                if len(parts) == 2:
+                                    thought_part = parts[0]
+                                    if "<think>" in thought_part:
+                                        thought_text = thought_part.split("<think>", 1)[1].strip()
+                                    clean_content = parts[1].strip()
+                            elif "<think>" in raw_content:
+                                thought_text = raw_content.replace("<think>", "").strip()
+                                clean_content = ""
+                            else:
+                                clean_content = raw_content.strip()
+                            
+                            clean_content = clean_content.replace("```json", "").replace("```", "").strip()
+                            return clean_content, raw_content, thought_text
+                        else:
+                            return f"Error {response.status}", f"Error {response.status}", None
+                            
             except Exception as e: 
                 return f"Error: {str(e)}", f"Error: {str(e)}", None
 
@@ -174,28 +181,33 @@ class RecursiveResearcher(Component):
         context = []
         search_results_collected = []
         
-        # Initial context
-        context.append({"role": "user", "content": f"Research topic: {research_subject}\nUser question: {user_query}\n\nStart by searching for current data on this topic."})
+        # Initial context with Bayesian framing
+        initial_prompt = f"""Research topic: {research_subject}
+User question: {user_query}
+
+Start by searching for CURRENT data to compare against the prior thesis."""
+        
+        context.append({"role": "user", "content": initial_prompt})
         
         final_json = None
         max_iterations = 5
         empty_response_count = 0
         
         for i in range(max_iterations):
-            logs.append(f"🧠 **DeepSeek (Iter {i+1}/{max_iterations}):** Thinking...")
+            logs.append(f"🧠 **R1 (Iter {i+1}/{max_iterations}):** Analyzing...")
             
             force_finish = empty_response_count >= 2
-            clean_response, raw_response, thoughts = ask_deepseek(context, force_finish=force_finish)
+            clean_response, raw_response, thoughts = await ask_deepseek(context, force_finish=force_finish)
             
             if thoughts:
-                short_thought = thoughts[:200] + "..." if len(thoughts) > 200 else thoughts
-                logs.append(f"💭 **DeepSeek Thought:** {short_thought}")
+                short_thought = thoughts[:150] + "..." if len(thoughts) > 150 else thoughts
+                logs.append(f"💭 **R1 Thought:** {short_thought}")
             
             if not clean_response:
                 empty_response_count += 1
-                logs.append(f"⚠️ **DeepSeek:** Empty response. Attempt {empty_response_count}/2...")
+                logs.append(f"⚠️ **R1:** Empty response. Attempt {empty_response_count}/2...")
                 context.append({"role": "assistant", "content": raw_response})
-                context.append({"role": "user", "content": "Please output SEARCH: <query> or FINISH: {json}"})
+                context.append({"role": "user", "content": "Output SEARCH: <query> or FINISH: {json}"})
                 continue
 
             empty_response_count = 0
@@ -207,17 +219,15 @@ class RecursiveResearcher(Component):
                 else:
                     query = clean_response.replace("SEARCH:", "").strip().split("\n")[0]
                 
-                # Clean up query (remove quotes if present)
                 query = query.strip('"\'')
+                logs.append(f"🔎 **R1 Requests:** *'{query[:80]}'*")
                 
-                logs.append(f"🔎 **DeepSeek Requests:** *'{query[:100]}'*")
-                
-                search_result = search_perplexity(query)
+                search_result = await search_perplexity(query)
                 search_results_collected.append({"query": query, "result": search_result[:1000]})
                 logs.append(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ **Perplexity:** Found data.")
                 
                 context.append({"role": "assistant", "content": raw_response})
-                context.append({"role": "user", "content": f"SEARCH RESULT:\n{search_result[:3000]}\n\nYou can SEARCH again for more data, or if you have enough information, use FINISH with a DETAILED analysis."})
+                context.append({"role": "user", "content": f"SEARCH RESULT:\n{search_result[:2500]}\n\nSEARCH again or FINISH with Bayesian update."})
                 
             elif "FINISH:" in clean_response or "{" in clean_response:
                 try:
@@ -231,29 +241,38 @@ class RecursiveResearcher(Component):
                         json_str = json_str[start:end+1]
                     
                     final_json = json.loads(json_str)
-                    logs.append("✅ **DeepSeek:** Research Complete.")
+                    
+                    # Log the delta if we had a prior
+                    if prior_probability is not None:
+                        new_prob = final_json.get("probability", 50)
+                        delta = new_prob - prior_probability
+                        if abs(delta) >= 5:
+                            logs.append(f"📈 **Bayesian Update:** {prior_probability:.0f}% → {new_prob:.0f}% (Δ {delta:+.0f}%)")
+                        else:
+                            logs.append(f"📊 **Bayesian Update:** Thesis stable at {new_prob:.0f}% (Δ {delta:+.0f}%)")
+                    
+                    logs.append("✅ **R1:** Research Complete.")
                     break
                 except Exception as e:
-                    logs.append(f"⚠️ **DeepSeek:** JSON Error. Retrying...")
+                    logs.append(f"⚠️ **R1:** JSON Error. Retrying...")
                     context.append({"role": "assistant", "content": raw_response})
-                    context.append({"role": "user", "content": "Invalid JSON. Provide FINISH: with valid JSON including detailed reasoning."})
+                    context.append({"role": "user", "content": "Invalid JSON. Provide FINISH: with valid JSON."})
             else:
-                logs.append(f"🤔 **DeepSeek:** {clean_response[:100]}...")
+                logs.append(f"🤔 **R1:** {clean_response[:80]}...")
                 context.append({"role": "assistant", "content": raw_response})
-                context.append({"role": "user", "content": "Please respond with SEARCH: <query> or FINISH: {json}"})
+                context.append({"role": "user", "content": "Respond with SEARCH: <query> or FINISH: {json}"})
 
         # Fallback with collected data
         if not final_json:
-            logs.append("⚠️ **System:** Forcing final conclusion with collected data...")
+            logs.append("⚠️ **System:** Forcing final Bayesian conclusion...")
             
-            # Build context from collected searches
-            search_summary = "\n\n".join([f"Query: {s['query']}\nResult: {s['result']}" for s in search_results_collected])
+            search_summary = "\n\n".join([f"Q: {s['query']}\nA: {s['result']}" for s in search_results_collected])
             
             force_context = [
-                {"role": "user", "content": f"Topic: {research_subject}\nQuestion: {user_query}\n\nCollected Research:\n{search_summary}\n\nProvide your FINAL assessment now."}
+                {"role": "user", "content": f"Topic: {research_subject}\nQuestion: {user_query}\n\nResearch:\n{search_summary}\n\nProvide FINAL Bayesian assessment."}
             ]
             
-            clean_response, raw_response, thoughts = ask_deepseek(force_context, force_finish=True)
+            clean_response, raw_response, thoughts = await ask_deepseek(force_context, force_finish=True)
             
             if clean_response and "{" in clean_response:
                 try:
@@ -261,22 +280,21 @@ class RecursiveResearcher(Component):
                     end = clean_response.rfind("}")
                     if start != -1 and end != -1:
                         final_json = json.loads(clean_response[start:end+1])
-                        logs.append("✅ **DeepSeek:** Forced conclusion successful.")
+                        logs.append("✅ **R1:** Forced conclusion successful.")
                 except:
                     pass
             
             if not final_json:
-                # Generate a meaningful fallback based on any search results
-                fallback_reasoning = "Research was conducted but the model failed to produce a structured conclusion. "
+                fallback_reasoning = "Research conducted but model failed to produce structured conclusion. "
                 if search_results_collected:
-                    fallback_reasoning += f"Data was gathered from {len(search_results_collected)} search(es) on topics including: "
-                    fallback_reasoning += ", ".join([s['query'][:50] for s in search_results_collected[:3]])
-                    fallback_reasoning += ". Please retry for a more detailed analysis."
+                    fallback_reasoning += f"Data gathered from {len(search_results_collected)} search(es). "
+                    fallback_reasoning += "Please retry for detailed analysis."
                 
                 final_json = {
-                    "probability": 50, 
+                    "probability": prior_probability if prior_probability else 50, 
                     "reasoning": fallback_reasoning, 
-                    "factors": []
+                    "factors": [],
+                    "delta_summary": "Unable to compute delta - fallback estimate"
                 }
                 logs.append("⚠️ **System:** Using fallback estimate.")
 
@@ -284,5 +302,6 @@ class RecursiveResearcher(Component):
             "research_summary": final_json.get("reasoning", ""),
             "model_confidence": float(final_json.get("probability", 50)),
             "factor_data": final_json.get("factors", []),
+            "delta_summary": final_json.get("delta_summary", ""),
             "logs": logs
         })

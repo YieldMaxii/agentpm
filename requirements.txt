@@ -1,4 +1,4 @@
 langflow
 python-dotenv
 requests
-asyncio==4.0.0
+aiohttp

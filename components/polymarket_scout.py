@@ -6,15 +6,15 @@ import json
 import urllib.parse
 import os
 import re
-import requests
+import aiohttp
 from dotenv import load_dotenv
 from pathlib import Path
 import datetime
-import traceback
+
 
 class PolymarketScout(Component):
     display_name = "Polymarket Scout (Scope Guard)"
-    description = "Finds the best matching Polymarket event for a user query."
+    description = "Finds the best matching Polymarket event for a user query. Uses Qwen for fast semantic matching."
     
     inputs = [
         DataInput(name="slug_input", display_name="Slug Data"),
@@ -24,7 +24,7 @@ class PolymarketScout(Component):
         Output(display_name="Market Data", name="market_data", method="fetch_data"),
     ]
 
-    def fetch_data(self) -> Data:
+    async def fetch_data(self) -> Data:
         logs = self.slug_input.data.get("logs", [])
         slug = self.slug_input.data.get("slug", "unknown")
         user_query = self.slug_input.data.get("original_query", "")
@@ -36,37 +36,11 @@ class PolymarketScout(Component):
         load_dotenv(dotenv_path=env_path)
         ua_headers = {"User-Agent": "Mozilla/5.0"}
 
-        # --- HELPER: EXTRACT ANSWER FROM DEEPSEEK R1 ---
-        def extract_answer(raw_content):
-            if not raw_content:
-                return "", None
-            
-            thought_text = None
-            clean_content = ""
-            
-            if "</think>" in raw_content:
-                parts = raw_content.split("</think>", 1)
-                if len(parts) == 2:
-                    thought_part = parts[0]
-                    if "<think>" in thought_part:
-                        thought_text = thought_part.split("<think>", 1)[1].strip()
-                    else:
-                        thought_text = thought_part.strip()
-                    clean_content = parts[1].strip()
-            elif "<think>" in raw_content:
-                thought_text = raw_content.replace("<think>", "").strip()
-                clean_content = ""
-            else:
-                clean_content = raw_content.strip()
-            
-            clean_content = clean_content.replace("```json", "").replace("```", "").strip()
-            return clean_content, thought_text
-
-        # --- HELPER: SEMANTIC MARKET MATCHER (LLM-based) ---
-        def semantic_match(candidates, user_query):
+        # --- HELPER: SEMANTIC MARKET MATCHER (Qwen - Fast & Cheap) ---
+        async def semantic_match(candidates, user_query):
             """
-            Uses an LLM to semantically match user intent to market options.
-            The LLM understands synonyms, context, and implicit meanings.
+            Uses Qwen to semantically match user intent to market options.
+            Fast and cost-effective for simple selection tasks.
             """
             if not candidates:
                 return None
@@ -79,78 +53,82 @@ class PolymarketScout(Component):
             # Build options list
             options_text = "\n".join([f"[{i}] {c['label']} (Current odds: {c['price']*100:.1f}%)" for i, c in enumerate(candidates)])
             
-            prompt = f"""You are a prediction market expert. Match the user's question to the best market option.
+            prompt = f"""Match the user's question to the best market option.
 
 USER QUESTION: "{user_query}"
 
-AVAILABLE MARKET OPTIONS:
+AVAILABLE OPTIONS:
 {options_text}
 
-INSTRUCTIONS:
-1. Understand what the user is ACTUALLY asking about (the underlying event, outcome, or probability they want to know)
-2. Find the market option that would answer their question
-3. Consider semantic equivalences:
-   - "cut rates" / "lower rates" / "reduce rates" = "decrease" / "bps decrease"
-   - "raise rates" / "hike rates" = "increase" / "bps increase"
-   - "hold" / "pause" / "no change" = "unchanged"
-   - "win" / "victory" = specific team/candidate names
-   - "release" / "launch" / "come out" = release date markets
-   - "before X" questions match markets with date ranges
-4. If the user asks about likelihood/probability of something happening, find the market that tracks that outcome
-5. If multiple options could answer the question, pick the MOST RELEVANT one (usually the most likely scenario being asked about)
+SEMANTIC EQUIVALENCES:
+- "cut rates" / "lower rates" = "decrease" / "bps decrease"
+- "raise rates" / "hike rates" = "increase" / "bps increase"  
+- "hold" / "pause" = "unchanged"
+- "win" / "victory" = team/candidate names
+- "release" / "launch" = release date markets
 
-OUTPUT FORMAT (JSON only, no other text):
-If a match is found: {{"match": true, "index": <number>, "reasoning": "<brief explanation>"}}
-If no match: {{"match": false, "reasoning": "<why no match>"}}"""
+OUTPUT JSON ONLY:
+{{"match": true, "index": <number>, "reasoning": "<brief>"}} or {{"match": false, "reasoning": "<why>"}}"""
 
+            url = "https://llm.chutes.ai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {CHUTES_KEY}",
+                "Content-Type": "application/json"
+            }
+            body = {
+                "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": True,
+                "max_tokens": 200,
+                "temperature": 0.1
+            }
+            
             try:
-                url = "https://llm.chutes.ai/v1/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {CHUTES_KEY}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": "deepseek-ai/DeepSeek-R1-0528",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 8192,
-                    "temperature": 0.1,
-                    "stream": False
-                }
-                
-                response = requests.post(url, headers=headers, json=payload, timeout=300)
-                
-                if response.status_code == 200:
-                    raw_content = response.json()["choices"][0]["message"]["content"]
-                    clean, thoughts = extract_answer(raw_content)
-                    
-                    if thoughts:
-                        short_thought = thoughts[:150] + "..." if len(thoughts) > 150 else thoughts
-                        logs.append(f"💭 **Matcher Thought:** {short_thought}")
-                    
-                    if clean:
-                        try:
-                            # Extract JSON
-                            json_match = re.search(r"\{.*\}", clean, re.DOTALL)
-                            if json_match:
-                                result = json.loads(json_match.group(0))
-                                
-                                if result.get("match") and "index" in result:
-                                    idx = int(result["index"])
-                                    if 0 <= idx < len(candidates):
-                                        reasoning = result.get("reasoning", "Semantic match")
-                                        logs.append(f"✅ **Semantic Match:** Index {idx} - {reasoning}")
-                                        return candidates[idx]
-                                else:
-                                    reasoning = result.get("reasoning", "No match found")
-                                    logs.append(f"❌ **Matcher:** {reasoning}")
-                        except (json.JSONDecodeError, ValueError, KeyError) as e:
-                            logs.append(f"⚠️ **Matcher:** Parse error - {str(e)[:50]}")
-                    else:
-                        logs.append("⚠️ **Matcher:** Empty response after thinking")
-                else:
-                    logs.append(f"⚠️ **Matcher:** API status {response.status_code}")
-                    
-            except requests.exceptions.Timeout:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=body) as response:
+                        if response.status == 200:
+                            full_content = ""
+                            async for line in response.content:
+                                line = line.decode("utf-8").strip()
+                                if line.startswith("data: "):
+                                    data = line[6:]
+                                    if data == "[DONE]":
+                                        break
+                                    try:
+                                        chunk = json.loads(data)
+                                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        full_content += content
+                                    except json.JSONDecodeError:
+                                        continue
+                            
+                            # Clean response
+                            clean = full_content.strip()
+                            clean = clean.replace("```json", "").replace("```", "").strip()
+                            
+                            # Remove think tags if present
+                            if "</think>" in clean:
+                                clean = clean.split("</think>", 1)[-1].strip()
+                            
+                            if clean:
+                                # Extract JSON
+                                json_match = re.search(r"\{.*\}", clean, re.DOTALL)
+                                if json_match:
+                                    result = json.loads(json_match.group(0))
+                                    
+                                    if result.get("match") and "index" in result:
+                                        idx = int(result["index"])
+                                        if 0 <= idx < len(candidates):
+                                            reasoning = result.get("reasoning", "Semantic match")
+                                            logs.append(f"✅ **Qwen Match:** Index {idx} - {reasoning}")
+                                            return candidates[idx]
+                                    else:
+                                        reasoning = result.get("reasoning", "No match found")
+                                        logs.append(f"❌ **Matcher:** {reasoning}")
+                        else:
+                            logs.append(f"⚠️ **Matcher:** API status {response.status}")
+                            
+            except aiohttp.ClientTimeout:
                 logs.append("⚠️ **Matcher:** Timeout")
             except Exception as e:
                 logs.append(f"⚠️ **Matcher:** Error - {str(e)[:50]}")
@@ -209,7 +187,7 @@ If no match: {{"match": false, "reasoning": "<why no match>"}}"""
         
         if candidates:
             logs.append(f"🔍 **Scout:** Matching {len(candidates)} option(s) to query...")
-            selected = semantic_match(candidates, user_query)
+            selected = await semantic_match(candidates, user_query)
         
         # --- STEP 3: FALLBACK GLOBAL SEARCH ---
         if not selected:
@@ -275,7 +253,7 @@ If no match: {{"match": false, "reasoning": "<why no match>"}}"""
                         
                         if all_candidates:
                             logs.append(f"🔍 **Scout:** Evaluating {len(all_candidates)} total option(s)...")
-                            selected = semantic_match(all_candidates[:20], user_query)  # Limit to 20 for API
+                            selected = await semantic_match(all_candidates[:20], user_query)  # Limit to 20 for API
                             
                 except Exception as e:
                     logs.append(f"❌ **Scout:** Search error - {str(e)[:50]}")
