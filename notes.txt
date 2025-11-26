@@ -1,0 +1,6 @@
+# Stop
+pkill -f langflow
+
+# Start (with API keys)
+cd /Users/tyler/projects/agentpm
+./start_langflow.sh

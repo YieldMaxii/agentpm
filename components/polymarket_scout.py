@@ -6,6 +6,7 @@ import json
 import urllib.parse
 import os
 import re
+import asyncio
 import aiohttp
 from dotenv import load_dotenv
 from pathlib import Path
@@ -25,6 +26,10 @@ class PolymarketScout(Component):
     ]
 
     async def fetch_data(self) -> Data:
+        # Pass through skip marker
+        if self.slug_input and self.slug_input.data.get("__skip__"):
+            return Data(data={"__skip__": True, "logs": self.slug_input.data.get("logs", [])})
+        
         logs = self.slug_input.data.get("logs", [])
         slug = self.slug_input.data.get("slug", "unknown")
         user_query = self.slug_input.data.get("original_query", "")
@@ -53,22 +58,45 @@ class PolymarketScout(Component):
             # Build options list
             options_text = "\n".join([f"[{i}] {c['label']} (Current odds: {c['price']*100:.1f}%)" for i, c in enumerate(candidates)])
             
-            prompt = f"""Match the user's question to the best market option.
+            prompt = f"""You are a Market Selection Agent for a prediction market research system.
+
+Your job is to select the SINGLE BEST market option that answers the user's question.
 
 USER QUESTION: "{user_query}"
 
-AVAILABLE OPTIONS:
+AVAILABLE OPTIONS (with current market probabilities):
 {options_text}
 
-SEMANTIC EQUIVALENCES:
-- "cut rates" / "lower rates" = "decrease" / "bps decrease"
-- "raise rates" / "hike rates" = "increase" / "bps increase"  
-- "hold" / "pause" = "unchanged"
-- "win" / "victory" = team/candidate names
-- "release" / "launch" = release date markets
+UNDERSTAND THE USER'S INTENT:
 
-OUTPUT JSON ONLY:
-{{"match": true, "index": <number>, "reasoning": "<brief>"}} or {{"match": false, "reasoning": "<why>"}}"""
+Think carefully about what the user is actually asking:
+
+1. **Predictive/Winner Questions** (e.g., "Who will win?", "What will happen?", "Who is going to be X?")
+   - The user wants to know the MOST LIKELY outcome
+   - You must select the option with the HIGHEST probability
+   - Example: "Who will win the Super Bowl?" → Select the team with highest odds (the favorite)
+
+2. **Specific Outcome Questions** (e.g., "Will the Fed cut rates?", "Will Team X win?")
+   - The user is asking about a SPECIFIC outcome
+   - Select the option that matches that specific outcome
+   - Example: "Will the Eagles win the Super Bowl?" → Select Eagles specifically
+
+3. **Likelihood Questions** (e.g., "How likely is X?", "What are the odds of X?")
+   - The user wants probability for a SPECIFIC outcome
+   - Select the option matching X
+
+SEMANTIC MAPPINGS:
+- "cut rates" / "lower rates" / "reduce rates" = "decrease" / "bps decrease"
+- "raise rates" / "hike rates" = "increase" / "bps increase"  
+- "hold" / "pause" / "no change" = "unchanged"
+
+CRITICAL REASONING STEP:
+Before selecting, ask yourself: "Is the user asking WHO/WHAT will happen (predictive), or are they asking about a SPECIFIC named outcome?"
+- If predictive → select HIGHEST probability option
+- If specific → select the matching option regardless of probability
+
+OUTPUT JSON:
+{{"match": true, "index": <the index number of your selection>, "reasoning": "<explain your reasoning>"}}"""
 
             url = "https://llm.chutes.ai/v1/chat/completions"
             headers = {
@@ -96,10 +124,12 @@ OUTPUT JSON ONLY:
                                         break
                                     try:
                                         chunk = json.loads(data)
-                                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                        content = delta.get("content", "")
-                                        full_content += content
-                                    except json.JSONDecodeError:
+                                        choices = chunk.get("choices", [])
+                                        if choices and len(choices) > 0:
+                                            delta = choices[0].get("delta", {})
+                                            content = delta.get("content") or ""
+                                            full_content += content
+                                    except (json.JSONDecodeError, IndexError, KeyError):
                                         continue
                             
                             # Clean response
@@ -128,7 +158,7 @@ OUTPUT JSON ONLY:
                         else:
                             logs.append(f"⚠️ **Matcher:** API status {response.status}")
                             
-            except aiohttp.ClientTimeout:
+            except asyncio.TimeoutError:
                 logs.append("⚠️ **Matcher:** Timeout")
             except Exception as e:
                 logs.append(f"⚠️ **Matcher:** Error - {str(e)[:50]}")
@@ -177,7 +207,7 @@ OUTPUT JSON ONLY:
                                         "price": float(prices[i]),
                                         "type": "Group"
                                     })
-                                except: 
+                                except (IndexError, ValueError):
                                     pass
         except Exception as e:
             logs.append(f"❌ Fetch Error: {str(e)}")

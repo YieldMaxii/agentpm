@@ -23,10 +23,17 @@ class QuickAnswer(Component):
     async def get_quick_answer(self) -> Message:
         """Get a quick answer from Perplexity for simple queries."""
         if not self.router_data:
-            return Message(text="⚠️ No query provided.")
+            return None  # No data, don't process
+        
+        router_decision = self.router_data.data.get("router_decision", "")
+        
+        # SELF-FILTER: Only process SIMPLE queries
+        if router_decision != "SIMPLE":
+            # Return skip marker instead of None so Aggregator doesn't hang
+            return Message(text="__SKIP__")
         
         query = self.router_data.data.get("original_query", "")
-        logs = self.router_data.data.get("logs", [])
+        logs = self.router_data.data.get("logs", []).copy()
         
         if not query:
             return Message(text="⚠️ Empty query.")

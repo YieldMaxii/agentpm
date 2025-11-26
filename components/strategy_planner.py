@@ -7,11 +7,12 @@ import re
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+import datetime
 
 
 class StrategyPlanner(Component):
-    display_name = "Strategy Planner (Outcome Definer)"
-    description = "Defines strict Success Conditions using zero-shot prompts. DeepSeek R1 knows how to think - we just tell it what we want."
+    display_name = "Strategy Planner (Universal Frameworks)"
+    description = "Selects from 6 distinct mental models (IRAC, Gatekeeper, PESTLE, etc.) based on domain."
 
     inputs = [
         DataInput(name="market_context", display_name="Market Data"),
@@ -22,65 +23,158 @@ class StrategyPlanner(Component):
     ]
 
     async def generate_plan(self) -> Data:
+        # Pass through skip marker
+        if self.market_context and hasattr(self.market_context, 'data') and self.market_context.data.get("__skip__"):
+            return Data(data={"__skip__": True, "logs": self.market_context.data.get("logs", [])})
+        
         if not self.market_context: 
             return Data(data={
                 "market_data": {},
-                "research_plan": {"domain": "Unknown", "success_condition": "Unknown", "factors": []},
+                "research_plan": {"domain": "Unknown", "success_condition": "Unknown", "questions": [], "factors": []},
                 "logs": ["⚠️ No market context provided"],
                 "original_query": "",
                 "history_context": ""
             })
         
-        logs = self.market_context.data.get("logs", [])
+        # --- 1. UNPACK DATA ---
+        logs = self.market_context.data.get("logs", []).copy()
         event = self.market_context.data.get("event")
         slug = self.market_context.data.get("slug")
         user_query = self.market_context.data.get("original_query", "")
         history_context = self.market_context.data.get("history_context", "")
+        market_odds = self.market_context.data.get("market_implied_prob", 50)
         
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        logs.append(f"🕒 **{timestamp}** - Planner Started")
+
+        # Handle "Unknown" Market Case
         is_unknown = not event or not slug or event == "Unknown Event" or slug == "unknown"
+        target = event if not is_unknown else user_query
         
-        target_description = f"EVENT: '{event}'"
         if is_unknown:
             logs.append("⚠️ **Planner:** No specific market found. Planning for User Query directly.")
-            target_description = f"QUESTION: '{user_query}'"
 
-        # ZERO-SHOT PROMPT: Tell R1 WHAT we want, not HOW to think
-        # R1 is already a reasoning model - it knows how to think
-        query = f"""{target_description}
-
-OUTPUT JSON:
-{{
-  "domain": "<Finance|Politics|Sports|Tech|Other>",
-  "success_condition": "<Precise testable outcome>",
-  "factors": [{{"name": "<Factor>", "question": "<Research question>"}}]
-}}"""
-
-        plan_json = {"domain": "General", "success_condition": "Unknown", "factors": [{"name": "General", "question": "Analyze market."}]}
-
+        # Load Keys
         env_path = Path(__file__).parent.parent / '.env'
         load_dotenv(dotenv_path=env_path)
-        
         CHUTES_KEY = os.getenv("CHUTES_API_KEY")
-        if not CHUTES_KEY:
-            logs.append("❌ **Planner Error:** CHUTES_API_KEY not set.")
+        PERPLEXITY_KEY = os.getenv("PERPLEXITY_API_KEY")
+        
+        if not CHUTES_KEY or not PERPLEXITY_KEY:
+            logs.append("❌ **Planner Error:** Missing API Keys.")
             return Data(data={"logs": logs})
 
-        url = "https://llm.chutes.ai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {CHUTES_KEY}",
-            "Content-Type": "application/json"
-        }
-        body = {
-            "model": "deepseek-ai/DeepSeek-R1-0528",
-            "messages": [{"role": "user", "content": query}],
-            "stream": True,
-            "max_tokens": 1024,
-            "temperature": 0.2
-        }
-        
+        # --- 2. PRE-FLIGHT: Fetch Live Context ---
+        live_context = "No live context available."
         try:
+            logs.append(f"🌐 **Planner:** Fetching live news snapshot...")
+            url = "https://api.perplexity.ai/chat/completions"
+            headers = {"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": "sonar",
+                "messages": [{"role": "user", "content": f"Summarize the top 3 breaking news headlines for: '{target}'. Be concise with dates."}]
+            }
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=body) as response:
+                async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status == 200:
+                        live_context = (await response.json())["choices"][0]["message"]["content"]
+                        logs.append("✅ **Planner:** Live context retrieved.")
+                    else:
+                        logs.append(f"⚠️ **Planner:** Context fetch failed (API {response.status}).")
+        except Exception as e:
+            logs.append(f"⚠️ **Planner:** Context fetch error.")
+
+        # --- 3. THE UNIVERSAL FRAMEWORKS PROMPT ---
+        query = f"""You are a Senior Research Architect. Your job is to select the optimal analytical framework and generate a research plan.
+
+TARGET: '{target}'
+MARKET ODDS: {market_odds:.1f}%
+LIVE NEWS CONTEXT: {live_context}
+PRIOR HISTORY: {history_context if history_context else "No prior analysis."}
+
+### SELECT THE OPTIMAL MENTAL MODEL:
+
+**1. IRAC Method (Legal/Courts/Regulatory Disputes)**
+   - Use for: Supreme Court cases, Lawsuits, Criminal Trials, Legal challenges
+   - Key Questions: What is the controlling Precedent? What specific Statutes apply? Who is the Judge/Jury? What is the procedural timeline?
+   - Success defined by: Court ruling, Legal deadline, Settlement announcement
+
+**2. Gatekeeper Model (Regulatory Approvals)**
+   - Use for: FDA drug approvals, SEC/ETF approvals, Merger approvals (FTC/DOJ), Licensing
+   - Key Questions: What is the specific approval checklist? What did the latest technical report say (Phase 3, EIS, S-1)? Who is the key decision-maker? What are historical approval rates?
+   - Success defined by: Regulatory announcement, Approval letter, PDUFA date
+
+**3. Comps & Decay (Entertainment/Media/Consumer)**
+   - Use for: Box office predictions, Album/Game sales, Streaming numbers, Product launches
+   - Key Questions: How did comparable titles perform? What are pre-sale/pre-order numbers? What's the critical vs audience score divergence? What's the decay curve?
+   - Success defined by: Sales threshold, Chart position, Review aggregator score
+
+**4. PESTLE (Geopolitics/Elections/Policy)**
+   - Use for: Elections, Wars/Conflicts, Policy changes, International relations
+   - Key Questions: Political forces? Economic pressures? Social sentiment? Technological factors? Legal constraints? Environmental context?
+   - Success defined by: Election result, Policy announcement, Treaty signing
+
+**5. 3-Horizon (Corporate/Tech/Business)**
+   - Use for: Product launches, CEO changes, Earnings, M&A, Tech announcements
+   - Key Questions: What are management incentives? What is technical readiness (supply chain, development)? What are market signals (insider trading, options flow)?
+   - Success defined by: Product announcement, Earnings beat/miss, Executive action
+
+**6. Base Rate + Bayes (Binary/General/Sports)**
+   - Use for: Sports outcomes, Weather, General binary events, Historical pattern matching
+   - Key Questions: What is the historical base rate? What is the current form/momentum? What are the key variables that deviate from base rate?
+   - Success defined by: Event occurrence, Score threshold, Specific outcome
+
+### YOUR TASK:
+
+1. **SELECT FRAMEWORK:** Choose the single most appropriate framework from above.
+2. **DEFINE SUCCESS:** What EXACTLY must happen for YES? Be specific with dates, thresholds, announcements.
+3. **GENERATE QUESTIONS:** Create 4-5 research questions using the selected framework:
+   - Q1: Consensus verification (Is the mainstream view accurate?)
+   - Q2-Q3: Framework-specific metrics (The key questions from your chosen model)
+   - Q4: Variant/Contrarian view (What is everyone missing?)
+4. **IDENTIFY FACTORS:** List 4-5 key drivers with research questions.
+
+### OUTPUT JSON ONLY:
+{{
+  "domain": "<Selected Framework Name>",
+  "framework_rationale": "<Why this framework fits>",
+  "success_condition": "<Precise testable outcome with dates/thresholds>",
+  "questions": [
+      "<Consensus verification question>",
+      "<Framework-specific metric question 1>",
+      "<Framework-specific metric question 2>",
+      "<Variant/Contrarian question>"
+  ],
+  "factors": [
+      {{"name": "<Factor Name>", "question": "<Research question>"}},
+      {{"name": "<Factor Name>", "question": "<Research question>"}},
+      {{"name": "<Factor Name>", "question": "<Research question>"}},
+      {{"name": "<Factor Name>", "question": "<Research question>"}}
+  ]
+}}"""
+
+        # --- 4. CALL DEEPSEEK R1 (with streaming) ---
+        plan_json = {
+            "domain": "Base Rate + Bayes", 
+            "framework_rationale": "Default framework",
+            "success_condition": f"The event '{target}' resolves to YES", 
+            "questions": ["What are the key factors affecting this outcome?"],
+            "factors": [{"name": "General Analysis", "question": "What are the key drivers?"}]
+        }
+
+        try:
+            url = "https://llm.chutes.ai/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {CHUTES_KEY}", "Content-Type": "application/json"}
+            body = {
+                "model": "deepseek-ai/DeepSeek-R1-0528",
+                "messages": [{"role": "user", "content": query}],
+                "stream": True,
+                "max_tokens": 2048,
+                "temperature": 0.3
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=body, timeout=aiohttp.ClientTimeout(total=120)) as response:
                     if response.status == 200:
                         full_content = ""
                         async for line in response.content:
@@ -91,42 +185,55 @@ OUTPUT JSON:
                                     break
                                 try:
                                     chunk = json.loads(data)
-                                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    full_content += content
-                                except json.JSONDecodeError:
+                                    choices = chunk.get("choices", [])
+                                    if choices and len(choices) > 0:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content") or ""
+                                        full_content += content
+                                except (json.JSONDecodeError, IndexError, KeyError):
                                     continue
                         
-                        # Extract answer from R1 format
-                        clean = full_content.strip()
-                        
-                        if "</think>" in clean:
-                            parts = clean.split("</think>", 1)
-                            if len(parts) == 2:
-                                thought_part = parts[0]
-                                if "<think>" in thought_part:
-                                    thoughts = thought_part.split("<think>", 1)[1].strip()
-                                    logs.append(f"💭 **Planner Thought:** {thoughts[:100]}...")
+                        # Clean <think> tags
+                        clean = full_content
+                        thoughts = None
+                        if "<think>" in clean:
+                            parts = re.split(r"</think>", clean)
+                            if len(parts) > 1:
+                                thoughts = parts[0].replace("<think>", "").strip()
                                 clean = parts[1].strip()
+                                logs.append(f"💭 **Planner Thought:** {thoughts[:120]}...")
                         
                         clean = clean.replace("```json", "").replace("```", "").strip()
 
                         # Extract JSON
                         try:
-                            if clean:
-                                json_match = re.search(r"\{.*\}", clean, re.DOTALL)
-                                if json_match:
-                                    plan_json = json.loads(json_match.group(0))
+                            start = clean.find("{")
+                            end = clean.rfind("}")
+                            if start != -1 and end != -1:
+                                json_str = clean[start:end+1]
+                                plan_json = json.loads(json_str)
+                                
+                                # Log the plan details
+                                framework = plan_json.get("domain", "Unknown")
+                                rationale = plan_json.get("framework_rationale", "")
+                                cond = plan_json.get("success_condition", "Undefined")
+                                num_questions = len(plan_json.get("questions", []))
+                                num_factors = len(plan_json.get("factors", []))
+                                
+                                logs.append(f"🧠 **Framework Selected:** {framework}")
+                                if rationale:
+                                    logs.append(f"📐 **Rationale:** {rationale[:80]}...")
+                                logs.append(f"🎯 **Success Condition:** {cond[:100]}...")
+                                logs.append(f"📝 **Plan:** {num_questions} questions, {num_factors} factors.")
+                            else:
+                                logs.append("⚠️ **Planner:** JSON parsing failed. Using default plan.")
                         except json.JSONDecodeError as e:
                             logs.append(f"⚠️ **Planner:** JSON Error: {str(e)[:50]}")
-
-                        success_cond = plan_json.get("success_condition", "Undefined")
-                        logs.append(f"🧠 **Planner (R1):** Success Condition: `{success_cond}`")
                     else:
                         logs.append(f"❌ **Planner Error:** API {response.status}")
 
         except Exception as e:
-            logs.append(f"❌ **Planner Error:** {str(e)}")
+            logs.append(f"❌ **Planner Exception:** {str(e)[:80]}")
 
         return Data(data={
             "market_data": self.market_context.data,

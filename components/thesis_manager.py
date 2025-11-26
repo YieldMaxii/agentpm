@@ -50,6 +50,10 @@ class ThesisManager(Component):
         - WRITE MODE: If research_result is connected, save it to memory
         - READ MODE: If only market_context, load previous thesis and inject history_context
         """
+        # Pass through skip marker
+        if self.market_context and hasattr(self.market_context, 'data') and self.market_context.data.get("__skip__"):
+            return Data(data={"__skip__": True, "logs": self.market_context.data.get("logs", [])})
+        
         # Initialize
         history = self._load_history()
         
@@ -126,7 +130,7 @@ class ThesisManager(Component):
                     time_str = f"{time_ago.seconds // 3600} hour(s) ago"
                 else:
                     time_str = f"{time_ago.seconds // 60} minute(s) ago"
-            except:
+            except (ValueError, TypeError):
                 time_str = last_time
             
             # Build history context for the researcher

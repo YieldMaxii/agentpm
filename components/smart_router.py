@@ -1,6 +1,6 @@
 from langflow.custom import Component
 from langflow.io import MessageInput, Output
-from langflow.schema import Data, Message
+from langflow.schema import Data
 import aiohttp
 import json
 import os
@@ -10,29 +10,31 @@ from pathlib import Path
 
 class SmartRouter(Component):
     display_name = "Smart Router (Async)"
-    description = "Classifies query intent to route traffic efficiently. SIMPLE queries go to quick answer, COMPLEX queries go to deep research."
+    description = "Classifies query as SIMPLE or COMPLEX. Connect output to BOTH QuickAnswer AND MarketResolver - they self-filter."
 
     inputs = [
         MessageInput(name="user_input", display_name="User Query"),
     ]
 
     outputs = [
-        Output(display_name="Deep Research Path", name="deep_path", method="route_deep"),
-        Output(display_name="Quick Answer Path", name="quick_path", method="route_quick"),
+        Output(display_name="Routed Data", name="routed_data", method="classify_and_route"),
     ]
 
-    async def _classify_query(self) -> dict:
-        """Use Qwen to classify query as SIMPLE or COMPLEX."""
+    async def classify_and_route(self) -> Data:
+        """Classify the query and output routing data. Connect to BOTH paths - they self-filter."""
         query = self.user_input.text if hasattr(self.user_input, 'text') else str(self.user_input)
         
-        # Load API Key
         env_path = Path(__file__).parent.parent / '.env'
         load_dotenv(dotenv_path=env_path)
         CHUTES_KEY = os.getenv("CHUTES_API_KEY")
         
         if not CHUTES_KEY:
-            # Default to COMPLEX if no key (safety)
-            return {"type": "COMPLEX", "reason": "No API key available"}
+            return Data(data={
+                "original_query": query,
+                "router_decision": "COMPLEX",
+                "router_reason": "No API key available",
+                "logs": ["🔀 **Router:** No API key - unable to classify"]
+            })
         
         url = "https://llm.chutes.ai/v1/chat/completions"
         headers = {
@@ -40,30 +42,58 @@ class SmartRouter(Component):
             "Content-Type": "application/json"
         }
         
-        # Strict classification prompt
-        prompt = (
-            f"CLASSIFY this query: '{query}'\n\n"
-            f"SIMPLE - Use for:\n"
-            f"- General knowledge questions (What is X?)\n"
-            f"- Current facts/prices (What is BTC price?)\n"
-            f"- Simple lookups (When is the Super Bowl?)\n"
-            f"- Greetings or basic questions\n\n"
-            f"COMPLEX - Use for:\n"
-            f"- Prediction markets (Will X happen?)\n"
-            f"- Market analysis (What are the odds of...)\n"
-            f"- Multi-step reasoning required\n"
-            f"- Probability assessments\n"
-            f"- Trading/investment decisions\n\n"
-            f"RETURN JSON ONLY: {{\"type\": \"SIMPLE\" or \"COMPLEX\", \"reason\": \"brief explanation\"}}"
-        )
-        
+        prompt = f"""# Your Role
+
+You are the **Router** - the first decision point in AgentPM, a sophisticated prediction market research system. Your job is critical: you determine which pipeline processes each user query.
+
+# The System Architecture
+
+AgentPM has two processing paths:
+
+## SIMPLE Path (QuickAnswer)
+- Uses Perplexity to perform a single internet search
+- Returns factual information directly
+- Fast (~2 seconds) and low cost (~$0.005)
+- Appropriate for: current facts, prices, dates, scores, definitions, general knowledge
+- Think of this as "What would Google/Perplexity answer directly?"
+
+## COMPLEX Path (Deep Research Pipeline)  
+- Searches Polymarket for relevant prediction markets
+- Loads historical thesis data for Bayesian updating
+- Uses DeepSeek R1 to define success conditions
+- Conducts recursive research with multiple Perplexity calls
+- Synthesizes probability assessments with supporting factors
+- Slower (~30-60 seconds) and higher cost (~$0.02-0.03)
+- Appropriate for: probability questions, prediction analysis, "will X happen?", market odds, future outcome analysis
+- Think of this as "What requires our full prediction market research capabilities?"
+
+# Your Decision
+
+Analyze this user query and determine which path serves them best:
+
+**Query:** "{query}"
+
+Ask yourself:
+1. Is the user asking for a current fact that exists on the internet right now? → SIMPLE
+2. Is the user asking about probability, likelihood, or future outcomes? → COMPLEX
+3. Would a single search engine query fully satisfy this request? → SIMPLE
+4. Does this require synthesizing information to form a probability assessment? → COMPLEX
+
+# Output Format
+
+Respond with only a JSON object:
+{{"type": "SIMPLE"}} or {{"type": "COMPLEX"}}"""
+
         body = {
             "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
-            "max_tokens": 150,
-            "temperature": 0.1
+            "max_tokens": 100,
+            "temperature": 0.0
         }
+        
+        decision_type = None
+        decision_reason = "LLM classification"
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -78,58 +108,41 @@ class SmartRouter(Component):
                                     break
                                 try:
                                     chunk = json.loads(data)
-                                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    full_content += content
-                                except json.JSONDecodeError:
+                                    choices = chunk.get("choices", [])
+                                    if choices and len(choices) > 0:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content") or ""
+                                        full_content += content
+                                except (json.JSONDecodeError, IndexError, KeyError):
                                     continue
                         
-                        # Clean and parse response
+                        # Clean the response
                         clean_content = full_content.strip()
-                        # Remove markdown code blocks if present
                         clean_content = clean_content.replace("```json", "").replace("```", "").strip()
-                        # Remove think tags if present
+                        
                         if "</think>" in clean_content:
                             clean_content = clean_content.split("</think>", 1)[-1].strip()
                         
-                        # Extract JSON
+                        # Parse JSON from LLM response
                         start = clean_content.find("{")
                         end = clean_content.rfind("}")
                         if start != -1 and end != -1:
                             json_str = clean_content[start:end+1]
-                            return json.loads(json_str)
+                            parsed = json.loads(json_str)
+                            if parsed.get("type") in ["SIMPLE", "COMPLEX"]:
+                                decision_type = parsed["type"]
                     
         except Exception as e:
-            pass
+            decision_reason = f"Classification error: {str(e)[:30]}"
         
-        # Default to COMPLEX if classification fails (safety - don't miss important queries)
-        return {"type": "COMPLEX", "reason": "Classification failed, defaulting to deep research"}
-
-    async def route_deep(self) -> Data:
-        """Route to deep research pipeline for COMPLEX queries."""
-        decision = await self._classify_query()
+        # If LLM didn't return a valid decision, we need to handle it
+        if decision_type is None:
+            decision_type = "COMPLEX"
+            decision_reason = "LLM response invalid - routing to full analysis for safety"
         
-        if decision.get("type") == "COMPLEX":
-            query = self.user_input.text if hasattr(self.user_input, 'text') else str(self.user_input)
-            return Data(data={
-                "original_query": query,
-                "router_decision": "COMPLEX",
-                "router_reason": decision.get("reason", ""),
-                "logs": [f"🔀 **Router:** COMPLEX query detected - routing to deep research. Reason: {decision.get('reason', '')}"]
-            })
-        return None
-
-    async def route_quick(self) -> Data:
-        """Route to quick answer for SIMPLE queries."""
-        decision = await self._classify_query()
-        
-        if decision.get("type") == "SIMPLE":
-            query = self.user_input.text if hasattr(self.user_input, 'text') else str(self.user_input)
-            return Data(data={
-                "original_query": query,
-                "router_decision": "SIMPLE",
-                "router_reason": decision.get("reason", ""),
-                "logs": [f"🔀 **Router:** SIMPLE query detected - routing to quick answer. Reason: {decision.get('reason', '')}"]
-            })
-        return None
-
+        return Data(data={
+            "original_query": query,
+            "router_decision": decision_type,
+            "router_reason": decision_reason,
+            "logs": [f"🔀 **Router:** Query classified as **{decision_type}**. Reason: {decision_reason}"]
+        })
