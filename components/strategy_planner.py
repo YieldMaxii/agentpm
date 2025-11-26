@@ -205,13 +205,20 @@ PRIOR HISTORY: {history_context if history_context else "No prior analysis."}
                         
                         clean = clean.replace("```json", "").replace("```", "").strip()
 
-                        # Extract JSON
+                        # Extract and parse JSON with repair attempts
                         try:
                             start = clean.find("{")
                             end = clean.rfind("}")
                             if start != -1 and end != -1:
                                 json_str = clean[start:end+1]
-                                plan_json = json.loads(json_str)
+                                
+                                # Try direct parse first
+                                try:
+                                    plan_json = json.loads(json_str)
+                                except json.JSONDecodeError:
+                                    # Attempt JSON repair
+                                    json_str = self._repair_json(json_str)
+                                    plan_json = json.loads(json_str)
                                 
                                 # Log the plan details
                                 framework = plan_json.get("domain", "Unknown")
@@ -226,9 +233,9 @@ PRIOR HISTORY: {history_context if history_context else "No prior analysis."}
                                 logs.append(f"🎯 **Success Condition:** {cond[:100]}...")
                                 logs.append(f"📝 **Plan:** {num_questions} questions, {num_factors} factors.")
                             else:
-                                logs.append("⚠️ **Planner:** JSON parsing failed. Using default plan.")
+                                logs.append("⚠️ **Planner:** No JSON found. Using default plan.")
                         except json.JSONDecodeError as e:
-                            logs.append(f"⚠️ **Planner:** JSON Error: {str(e)[:50]}")
+                            logs.append(f"⚠️ **Planner:** JSON Error: {str(e)[:50]}. Using default.")
                     else:
                         logs.append(f"❌ **Planner Error:** API {response.status}")
 
@@ -242,3 +249,39 @@ PRIOR HISTORY: {history_context if history_context else "No prior analysis."}
             "original_query": user_query,
             "history_context": history_context
         })
+    
+    def _repair_json(self, json_str: str) -> str:
+        """Attempt to repair common JSON formatting issues from LLM output."""
+        import re
+        
+        # Remove any text before first { and after last }
+        start = json_str.find("{")
+        end = json_str.rfind("}")
+        if start != -1 and end != -1:
+            json_str = json_str[start:end+1]
+        
+        # Fix common issues:
+        # 1. Remove trailing commas before } or ]
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+        
+        # 2. Add missing commas between elements (} followed by " or { followed by ")
+        json_str = re.sub(r'}\s*"', '}, "', json_str)
+        json_str = re.sub(r']\s*"', '], "', json_str)
+        json_str = re.sub(r'"\s*{', '", {', json_str)
+        json_str = re.sub(r'"\s*\[', '", [', json_str)
+        
+        # 3. Fix missing commas between string values
+        json_str = re.sub(r'"\s+(?=")', '", ', json_str)
+        
+        # 4. Replace single quotes with double quotes (if used for strings)
+        # Be careful not to break apostrophes in text
+        json_str = re.sub(r"(?<=[{,:\[])\s*'([^']*?)'\s*(?=[},:\]])", r'"\1"', json_str)
+        
+        # 5. Fix newlines inside strings
+        json_str = json_str.replace('\n', '\\n')
+        
+        # 6. Escape unescaped quotes inside strings (tricky - basic attempt)
+        # This is a simple heuristic
+        
+        return json_str

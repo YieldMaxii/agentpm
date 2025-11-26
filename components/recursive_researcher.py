@@ -177,7 +177,7 @@ class RecursiveResearcher(Component):
                 knowledge_base.append(entry)
                 all_citations.extend(res.get('citations', []))
                 logs.append(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ Found: *{res['query'][:50]}...*")
-            else:
+                else:
                 logs.append(f"&nbsp;&nbsp;&nbsp;&nbsp;⚠️ Failed: *{res['query'][:50]}...*")
 
         # --- 4. TREE OF THOUGHT (The Branching) ---
@@ -306,7 +306,13 @@ OUTPUT VALID JSON:
             if final_res:
                 json_match = re.search(r"\{.*\}", final_res, re.DOTALL)
                 if json_match:
-                    final_json = json.loads(json_match.group(0))
+                    json_str = json_match.group(0)
+                    try:
+                        final_json = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Attempt repair
+                        json_str = self._repair_json(json_str)
+                    final_json = json.loads(json_str)
         except (json.JSONDecodeError, ValueError):
             logs.append("⚠️ **R1:** JSON parsing failed. Retrying...")
 
@@ -328,21 +334,21 @@ OUTPUT JSON: {{"probability": X, "reasoning": "detailed analysis...", "factors":
                 pass
 
         # Final fallback
-        if not final_json:
+            if not final_json:
             summary_text = f"Research conducted with {len(knowledge_base)} sources and {len(all_citations)} citations. "
             if knowledge_base:
                 # Extract key points from knowledge base
                 summary_text += "Key findings:\n\n"
                 for kb in knowledge_base[:3]:
                     summary_text += f"• {kb[:300]}...\n\n"
-            
-            final_json = {
+                
+                final_json = {
                 "probability": prior_probability if prior_probability else 50,
                 "reasoning": summary_text,
                 "factors": [],
                 "delta_summary": "Analysis incomplete - using fallback"
-            }
-            logs.append("⚠️ **System:** Using fallback estimate.")
+                }
+                logs.append("⚠️ **System:** Using fallback estimate.")
         else:
             # Log Bayesian update if we had a prior
             if prior_probability is not None:
@@ -363,3 +369,30 @@ OUTPUT JSON: {{"probability": X, "reasoning": "detailed analysis...", "factors":
             "citations": all_citations[:10],  # Top 10 citations
             "logs": logs
         })
+    
+    def _repair_json(self, json_str: str) -> str:
+        """Attempt to repair common JSON formatting issues from LLM output."""
+        # Remove any text before first { and after last }
+        start = json_str.find("{")
+        end = json_str.rfind("}")
+        if start != -1 and end != -1:
+            json_str = json_str[start:end+1]
+        
+        # Fix common issues:
+        # 1. Remove trailing commas before } or ]
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+        
+        # 2. Add missing commas between elements
+        json_str = re.sub(r'}\s*"', '}, "', json_str)
+        json_str = re.sub(r']\s*"', '], "', json_str)
+        json_str = re.sub(r'"\s*{', '", {', json_str)
+        json_str = re.sub(r'"\s*\[', '", [', json_str)
+        
+        # 3. Fix missing commas between string values
+        json_str = re.sub(r'"\s+(?=")', '", ', json_str)
+        
+        # 4. Fix newlines inside strings
+        json_str = json_str.replace('\n', '\\n')
+        
+        return json_str
