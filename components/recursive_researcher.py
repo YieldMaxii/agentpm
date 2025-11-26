@@ -177,7 +177,7 @@ class RecursiveResearcher(Component):
                 knowledge_base.append(entry)
                 all_citations.extend(res.get('citations', []))
                 logs.append(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ Found: *{res['query'][:50]}...*")
-                else:
+            else:
                 logs.append(f"&nbsp;&nbsp;&nbsp;&nbsp;⚠️ Failed: *{res['query'][:50]}...*")
 
         # --- 4. TREE OF THOUGHT (The Branching) ---
@@ -334,21 +334,21 @@ OUTPUT JSON: {{"probability": X, "reasoning": "detailed analysis...", "factors":
                 pass
 
         # Final fallback
-            if not final_json:
+        if not final_json:
             summary_text = f"Research conducted with {len(knowledge_base)} sources and {len(all_citations)} citations. "
             if knowledge_base:
                 # Extract key points from knowledge base
                 summary_text += "Key findings:\n\n"
                 for kb in knowledge_base[:3]:
                     summary_text += f"• {kb[:300]}...\n\n"
-                
-                final_json = {
+            
+            final_json = {
                 "probability": prior_probability if prior_probability else 50,
                 "reasoning": summary_text,
                 "factors": [],
                 "delta_summary": "Analysis incomplete - using fallback"
-                }
-                logs.append("⚠️ **System:** Using fallback estimate.")
+            }
+            logs.append("⚠️ **System:** Using fallback estimate.")
         else:
             # Log Bayesian update if we had a prior
             if prior_probability is not None:
