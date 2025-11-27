@@ -47,6 +47,21 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
   const [priceHistory, setPriceHistory] = useState<PriceHistoryData>({});
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Track which outcomes are visible on the chart (all visible by default)
+  const [hiddenOutcomes, setHiddenOutcomes] = useState<Set<string>>(new Set());
+  
+  // Toggle outcome visibility
+  const toggleOutcome = useCallback((outcomeTitle: string) => {
+    setHiddenOutcomes(prev => {
+      const next = new Set(prev);
+      if (next.has(outcomeTitle)) {
+        next.delete(outcomeTitle);
+      } else {
+        next.add(outcomeTitle);
+      }
+      return next;
+    });
+  }, []);
   
   // Fetch historical price data for all outcomes
   const fetchPriceHistory = useCallback(async (market: GroupedMarket, tf: Timeframe) => {
@@ -102,6 +117,11 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
     }
   }, [market, timeframe, fetchPriceHistory]);
   
+  // Reset hidden outcomes when market changes
+  useEffect(() => {
+    setHiddenOutcomes(new Set());
+  }, [market?.eventId]);
+  
   // Generate chart data from real or simulated data
   const { chartData, maxY } = useMemo(() => {
     if (!market) return { chartData: [], maxY: 100 };
@@ -133,8 +153,15 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
   }
 
   const outcomes = market.outcomes.slice(0, 6);
-  const outcomeNames = outcomes.map(o => o.title);
-  const colors = TREMOR_COLORS.slice(0, outcomeNames.length);
+  
+  // Filter outcomes for chart based on visibility
+  const visibleOutcomes = outcomes.filter(o => !hiddenOutcomes.has(o.title));
+  const visibleOutcomeNames = visibleOutcomes.map(o => o.title);
+  
+  // Build colors array maintaining original indices for consistency
+  const visibleColors = outcomes
+    .map((o, idx) => hiddenOutcomes.has(o.title) ? null : TREMOR_COLORS[idx])
+    .filter((c): c is typeof TREMOR_COLORS[number] => c !== null);
 
   return (
     <div className="h-full flex flex-col">
@@ -165,19 +192,44 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
           {outcomes.map((outcome, idx) => {
             const odds = outcome.odds * 100;
             const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
+            const isHidden = hiddenOutcomes.has(outcome.title);
             return (
-              <div key={outcome.id} className="flex items-center gap-1.5">
+              <button
+                key={outcome.id}
+                onClick={() => toggleOutcome(outcome.title)}
+                className={cn(
+                  "flex items-center gap-1.5 px-1.5 py-0.5 rounded transition-all",
+                  "hover:bg-secondary/50 cursor-pointer",
+                  isHidden && "opacity-40"
+                )}
+                title={isHidden ? `Show ${outcome.title} on chart` : `Hide ${outcome.title} from chart`}
+              >
                 <span 
-                  className="w-2.5 h-2.5 rounded-full" 
-                  style={{ backgroundColor: OUTCOME_COLORS[idx] }}
+                  className={cn(
+                    "w-2.5 h-2.5 rounded-full transition-all",
+                    isHidden && "ring-1 ring-muted-foreground"
+                  )}
+                  style={{ 
+                    backgroundColor: isHidden ? 'transparent' : OUTCOME_COLORS[idx],
+                    borderColor: OUTCOME_COLORS[idx],
+                  }}
                 />
-                <span className="text-xs text-muted-foreground">
+                <span className={cn(
+                  "text-xs transition-colors",
+                  isHidden ? "text-muted-foreground/50 line-through" : "text-muted-foreground"
+                )}>
                   {outcome.title}
                 </span>
-                <span className="text-xs font-semibold" style={{ color: OUTCOME_COLORS[idx] }}>
+                <span 
+                  className={cn(
+                    "text-xs font-semibold transition-colors",
+                    isHidden && "opacity-50"
+                  )} 
+                  style={{ color: OUTCOME_COLORS[idx] }}
+                >
                   {displayOdds}%
                 </span>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -218,8 +270,8 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
             className="h-full"
             data={chartData}
             index="time"
-            categories={outcomeNames}
-            colors={colors as unknown as string[]}
+            categories={visibleOutcomeNames}
+            colors={visibleColors as unknown as string[]}
             valueFormatter={(value) => `${value.toFixed(0)}%`}
             showLegend={false}
             showGridLines={true}
@@ -267,29 +319,46 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
           <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide text-right pb-1">% Chance</div>
           <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide text-right pb-1">Volume</div>
           
-          {/* Outcome rows */}
+          {/* Outcome rows - clickable to toggle chart visibility */}
           {outcomes.map((outcome, idx) => {
             const odds = outcome.odds * 100;
             const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
+            const isHidden = hiddenOutcomes.has(outcome.title);
             
             return (
-              <div key={outcome.id} className="contents group">
-                <div className="flex items-center py-1.5 border-t border-border/30 group-first:border-t-0">
+              <div 
+                key={outcome.id} 
+                className={cn(
+                  "contents group cursor-pointer",
+                  isHidden && "opacity-40"
+                )}
+                onClick={() => toggleOutcome(outcome.title)}
+                title={isHidden ? `Show ${outcome.title} on chart` : `Hide ${outcome.title} from chart`}
+              >
+                <div className="flex items-center py-1.5 border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30">
                   <span 
-                    className="w-2 h-2 rounded-full" 
-                    style={{ backgroundColor: OUTCOME_COLORS[idx] }}
+                    className={cn(
+                      "w-2 h-2 rounded-full transition-all",
+                      isHidden && "ring-1 ring-muted-foreground"
+                    )}
+                    style={{ 
+                      backgroundColor: isHidden ? 'transparent' : OUTCOME_COLORS[idx],
+                    }}
                   />
                 </div>
-                <div className="py-1.5 truncate text-foreground border-t border-border/30 group-first:border-t-0">
+                <div className={cn(
+                  "py-1.5 truncate border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30 transition-colors",
+                  isHidden ? "text-muted-foreground line-through" : "text-foreground"
+                )}>
                   {outcome.title}
                 </div>
                 <div className={cn(
-                  'py-1.5 font-mono font-bold text-right tabular-nums text-sm border-t border-border/30 group-first:border-t-0',
-                  odds >= 50 ? 'text-primary' : odds >= 20 ? 'text-foreground' : 'text-muted-foreground'
+                  'py-1.5 font-mono font-bold text-right tabular-nums text-sm border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30 transition-colors',
+                  isHidden ? 'text-muted-foreground' : odds >= 50 ? 'text-primary' : odds >= 20 ? 'text-foreground' : 'text-muted-foreground'
                 )}>
                   {displayOdds}%
                 </div>
-                <div className="py-1.5 font-mono text-muted-foreground text-right tabular-nums border-t border-border/30 group-first:border-t-0">
+                <div className="py-1.5 font-mono text-muted-foreground text-right tabular-nums border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30 transition-colors">
                   ${formatNumber(outcome.volume24h)}
                 </div>
               </div>
