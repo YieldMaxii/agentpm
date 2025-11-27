@@ -16,6 +16,7 @@ export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) 
   const [isExpanded, setIsExpanded] = useState(false);
   const hasMultipleOutcomes = event.outcomes.length > 1;
   const volume = formatVolume(event.totalVolume24h);
+  const isResolved = event.resolved === true;
   
   // For single outcome events, show the outcome odds
   // For multi-outcome events, show the top outcome odds
@@ -43,8 +44,9 @@ export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) 
         className={cn(
           'w-full grid gap-2 items-center px-2 py-2 text-left transition-colors duration-150',
           'hover:bg-secondary/50',
-          'grid-cols-[16px_1fr_60px_70px]',
-          isActive && 'bg-secondary/80'
+          'grid-cols-[16px_1fr_70px_80px]',
+          isActive && 'bg-secondary/80',
+          isResolved && 'opacity-50'
         )}
       >
         {/* Expand Icon or Traffic Light */}
@@ -65,9 +67,16 @@ export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) 
 
         {/* Event Title */}
         <div className="min-w-0 pr-2">
-          <span className="text-xs font-medium truncate block">
-            {event.eventTitle}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium truncate">
+              {event.eventTitle}
+            </span>
+            {isResolved && (
+              <span className="shrink-0 text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                RESOLVED
+              </span>
+            )}
+          </div>
           {hasMultipleOutcomes && (
             <span className="text-[10px] text-muted-foreground">
               {event.outcomes.length} outcomes

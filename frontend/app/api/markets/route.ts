@@ -3,36 +3,72 @@ import { NormalizedMarket, GroupedMarket, MarketOutcome } from '@/lib/types';
 
 const GAMMA_API_BASE = 'https://gamma-api.polymarket.com';
 
+interface PolymarketEvent {
+  id: string;
+  title: string;
+  slug?: string;
+  description?: string;
+  category?: string;
+  endDate?: string;
+  closed?: boolean;
+  resolved?: boolean;
+  markets?: PolymarketMarket[];
+  tags?: { slug: string; label: string }[];
+}
+
+interface PolymarketMarket {
+  id?: string;
+  closed?: boolean;
+  resolved?: boolean;
+  outcomePrices?: string | string[];
+  volume24hr?: string;
+  volume?: string;
+  liquidity?: string;
+  groupItemTitle?: string;
+  question?: string;
+  slug?: string;
+  description?: string;
+  endDate?: string;
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const limit = parseInt(searchParams.get('limit') || '20', 10);
   const query = searchParams.get('q');
 
   try {
-    // Build the API URL
-    const url = new URL(`${GAMMA_API_BASE}/events`);
-    url.searchParams.append('limit', String(Math.min(limit, 50)));
-    url.searchParams.append('active', 'true');
-    url.searchParams.append('closed', 'false');
+    // Fetch ALL active markets by paginating through all pages in PARALLEL
+    const pageSize = 100; // Polymarket API returns up to 100 per request
+    const maxPages = 40; // 40 pages = 4000 events max
     
-    // Add search query if provided
-    if (query && query.trim()) {
-      url.searchParams.append('q', query.trim());
-    }
+    // Create all fetch promises in parallel for speed
+    const fetchPromises = Array.from({ length: maxPages }, (_, page) => {
+      const url = new URL(`${GAMMA_API_BASE}/events`);
+      url.searchParams.append('limit', String(pageSize));
+      url.searchParams.append('offset', String(page * pageSize));
+      url.searchParams.append('active', 'true');
+      url.searchParams.append('closed', 'false');
 
-    const response = await fetch(url.toString(), {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'AgentPM/1.0',
-      },
-      next: { revalidate: 10 }, // Cache for 10 seconds
+      return fetch(url.toString(), {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'AgentPM/1.0',
+        },
+        next: { revalidate: 60 }, // Cache for 60 seconds
+      }).then(res => res.ok ? res.json() : []).catch(() => []);
     });
 
-    if (!response.ok) {
-      throw new Error(`Polymarket API error: ${response.status}`);
+    // Wait for all pages in parallel
+    const allPages = await Promise.all(fetchPromises);
+    
+    // Flatten and filter out empty pages
+    const allEvents: PolymarketEvent[] = [];
+    for (const pageEvents of allPages) {
+      if (pageEvents && pageEvents.length > 0) {
+        allEvents.push(...pageEvents);
+      }
     }
 
-    const events = await response.json();
+    const events = allEvents;
     const groupedMarkets: GroupedMarket[] = [];
     const flatMarkets: NormalizedMarket[] = [];
 
@@ -43,6 +79,23 @@ export async function GET(request: Request) {
       let totalLiquidity = 0;
       
       for (const market of eventMarkets) {
+        // Skip resolved/closed individual markets within an active event
+        // These show 100% or 0% because they've already settled
+        if (market.closed === true || market.resolved === true) {
+          continue;
+        }
+        
+        // Skip placeholder markets (like "Individual T", "Individual P", etc.)
+        // These have no prices, no volume, and no liquidity
+        const hasValidPrices = market.outcomePrices !== undefined && market.outcomePrices !== null;
+        const volume = parseFloat(market.volume24hr || market.volume || '0') || 0;
+        const liquidity = parseFloat(market.liquidity || '0') || 0;
+        
+        // If no valid prices AND no volume/liquidity, skip this placeholder
+        if (!hasValidPrices && volume === 0 && liquidity === 0) {
+          continue;
+        }
+        
         // Parse the outcome prices
         let yesPrice = 0.5;
         try {
@@ -54,13 +107,28 @@ export async function GET(request: Request) {
           yesPrice = 0.5;
         }
         
-        const volume = parseFloat(market.volume24hr || market.volume || '0') || 0;
-        const liquidity = parseFloat(market.liquidity || '0') || 0;
+        // Only skip markets that are exactly 100% or 0% AND marked as resolved
+        // Don't filter low-probability outcomes like "<1%" that are still active
+        if ((yesPrice >= 1.0 || yesPrice <= 0) && (market.closed || market.resolved)) {
+          continue;
+        }
         totalVolume += volume;
         totalLiquidity += liquidity;
         
         // Get outcome title - this is the specific outcome within the event
         const outcomeTitle = market.groupItemTitle || market.question || event.title;
+        
+        // Parse clobTokenIds - they come as a JSON string from the API
+        let tokenIds: string[] = [];
+        try {
+          if (typeof market.clobTokenIds === 'string') {
+            tokenIds = JSON.parse(market.clobTokenIds);
+          } else if (Array.isArray(market.clobTokenIds)) {
+            tokenIds = market.clobTokenIds;
+          }
+        } catch {
+          tokenIds = [];
+        }
         
         outcomes.push({
           id: market.id || `${event.id}-${outcomes.length}`,
@@ -68,6 +136,7 @@ export async function GET(request: Request) {
           odds: yesPrice,
           volume24h: volume,
           liquidity: liquidity,
+          clobTokenIds: tokenIds,
         });
 
         // Also add to flat markets for backward compatibility
@@ -94,6 +163,12 @@ export async function GET(request: Request) {
         // Sort outcomes by odds (highest first)
         outcomes.sort((a, b) => b.odds - a.odds);
         
+        // Extract tags from event
+        const tags = (event.tags || []).map((tag) => ({
+          slug: tag.slug || '',
+          label: tag.label || '',
+        })).filter((tag) => tag.slug);
+        
         groupedMarkets.push({
           eventId: event.id,
           eventTitle: event.title,
@@ -105,6 +180,7 @@ export async function GET(request: Request) {
           totalVolume24h: totalVolume,
           totalLiquidity: totalLiquidity,
           hasArbitrage: false,
+          tags: tags,
         });
       }
     }
@@ -113,8 +189,9 @@ export async function GET(request: Request) {
     groupedMarkets.sort((a, b) => b.totalVolume24h - a.totalVolume24h);
 
     return NextResponse.json({
-      markets: flatMarkets.slice(0, limit * 3),
-      groupedMarkets: groupedMarkets.slice(0, limit),
+      markets: flatMarkets,
+      groupedMarkets: groupedMarkets,
+      totalEvents: groupedMarkets.length,
       timestamp: Date.now(),
       query: query || null,
     });

@@ -11,20 +11,33 @@ import {
   AgentTag
 } from '@/lib/types';
 
+// Filter types
+export type CategorySlug = 'all' | 'politics' | 'crypto' | 'sports' | 'ai' | 'business' | 'finance' | 'science' | 'pop-culture' | 'geopolitics';
+export type SortOption = 'trending' | 'newest' | 'ending-soon' | 'liquidity' | 'alphabetical';
+
+export interface MarketFilters {
+  showResolved: boolean;
+  category: CategorySlug;
+  sortBy: SortOption;
+}
+
 interface AgentStore {
   // Market State
   markets: NormalizedMarket[];
   groupedMarkets: GroupedMarket[];
+  allGroupedMarkets: GroupedMarket[]; // Unfiltered list
   activeMarket: NormalizedMarket | null;
   activeGroupedMarket: GroupedMarket | null;
   activeOutcomeId: string | null;
   isSearching: boolean;
   searchQuery: string;
+  filters: MarketFilters;
   setMarkets: (markets: NormalizedMarket[]) => void;
   setGroupedMarkets: (markets: GroupedMarket[]) => void;
   setActiveMarket: (market: NormalizedMarket | null) => void;
   setActiveGroupedMarket: (event: GroupedMarket) => void;
   setSearchQuery: (query: string) => void;
+  setFilters: (filters: MarketFilters) => void;
   searchMarkets: (query: string) => Promise<void>;
   
   // Agent State
@@ -60,15 +73,79 @@ interface AgentStore {
   setAbortController: (controller: AbortController | null) => void;
 }
 
+// Helper function to filter markets by category
+function filterByCategory(markets: GroupedMarket[], category: CategorySlug): GroupedMarket[] {
+  if (category === 'all') return markets;
+  
+  return markets.filter(market => {
+    // Check if any tag matches the category
+    const tags = market.tags || [];
+    return tags.some((tag) => {
+      const tagSlug = tag?.slug;
+      return tagSlug === category || tagSlug?.includes(category);
+    });
+  });
+}
+
+// Helper function to filter resolved markets
+function filterResolved(markets: GroupedMarket[], showResolved: boolean): GroupedMarket[] {
+  if (showResolved) return markets;
+  return markets.filter(market => !market.resolved);
+}
+
+// Helper function to sort markets
+function sortMarkets(markets: GroupedMarket[], sortBy: SortOption): GroupedMarket[] {
+  const sorted = [...markets];
+  
+  switch (sortBy) {
+    case 'trending':
+      // Sort by 24h volume (most active first) - this is the default "trending" sort
+      return sorted.sort((a, b) => b.totalVolume24h - a.totalVolume24h);
+    
+    case 'newest':
+      // Sort by end date descending (furthest end date = newest markets)
+      return sorted.sort((a, b) => {
+        const dateA = a.endDate ? new Date(a.endDate).getTime() : 0;
+        const dateB = b.endDate ? new Date(b.endDate).getTime() : 0;
+        return dateB - dateA;
+      });
+    
+    case 'ending-soon':
+      // Sort by end date ascending (soonest first)
+      return sorted.sort((a, b) => {
+        const dateA = a.endDate ? new Date(a.endDate).getTime() : Infinity;
+        const dateB = b.endDate ? new Date(b.endDate).getTime() : Infinity;
+        return dateA - dateB;
+      });
+    
+    case 'liquidity':
+      // Sort by total liquidity (most liquid first)
+      return sorted.sort((a, b) => b.totalLiquidity - a.totalLiquidity);
+    
+    case 'alphabetical':
+      // Sort alphabetically by title
+      return sorted.sort((a, b) => a.eventTitle.localeCompare(b.eventTitle));
+    
+    default:
+      return sorted;
+  }
+}
+
 export const useAgentStore = create<AgentStore>((set, get) => ({
   // Initial Market State - empty, will be populated by search
   markets: [],
   groupedMarkets: [],
+  allGroupedMarkets: [],
   activeMarket: null,
   activeGroupedMarket: null,
   activeOutcomeId: null,
   isSearching: false,
   searchQuery: '',
+  filters: {
+    showResolved: false,
+    category: 'all' as CategorySlug,
+    sortBy: 'trending' as SortOption,
+  },
   
   setMarkets: (markets) => set({ markets }),
   setGroupedMarkets: (groupedMarkets) => set({ groupedMarkets }),
@@ -99,29 +176,75 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   },
   setSearchQuery: (query) => set({ searchQuery: query }),
   
-  // Search markets from Polymarket API
+  setFilters: (filters: MarketFilters) => {
+    const { allGroupedMarkets } = get();
+    
+    // Apply filters to the stored markets
+    let filtered = allGroupedMarkets;
+    filtered = filterResolved(filtered, filters.showResolved);
+    filtered = filterByCategory(filtered, filters.category);
+    filtered = sortMarkets(filtered, filters.sortBy);
+    
+    set({ 
+      filters, 
+      groupedMarkets: filtered 
+    });
+  },
+  
+  // Search markets - filter locally from all markets for better results
   searchMarkets: async (query: string) => {
+    const { filters, allGroupedMarkets } = get();
     set({ isSearching: true, searchQuery: query });
     
     try {
-      const url = query 
-        ? `/api/markets/search?q=${encodeURIComponent(query)}&limit=20`
-        : `/api/markets?limit=20`;
+      // Always fetch from main markets endpoint and filter locally
+      // Polymarket's search API is unreliable, so we filter on our end
+      let url = `/api/markets`;
       
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Search failed: ${response.status}`);
+      // Add category filter if not 'all'
+      if (filters.category !== 'all') {
+        url += `?tag=${filters.category}`;
       }
       
-      const data = await response.json();
+      // Only fetch if we don't have markets cached or query is empty (refresh)
+      let allMarkets = allGroupedMarkets;
+      if (!allMarkets.length || !query) {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Fetch failed: ${response.status}`);
+        }
+        const data = await response.json();
+        allMarkets = data.groupedMarkets || [];
+      }
+      
+      // Apply search filter locally for better matching
+      let filtered = allMarkets;
+      if (query && query.trim()) {
+        const searchTerms = query.toLowerCase().trim().split(/\s+/);
+        filtered = allMarkets.filter((market: GroupedMarket) => {
+          const title = market.eventTitle?.toLowerCase() || '';
+          const description = market.description?.toLowerCase() || '';
+          // Match all search terms (AND logic)
+          return searchTerms.every(term => 
+            title.includes(term) || description.includes(term)
+          );
+        });
+      }
+      
+      // Apply other filters and sorting
+      filtered = filterResolved(filtered, filters.showResolved);
+      filtered = filterByCategory(filtered, filters.category);
+      filtered = sortMarkets(filtered, filters.sortBy);
+      
       set({ 
-        markets: data.markets || [], 
-        groupedMarkets: data.groupedMarkets || [],
+        markets: [], 
+        allGroupedMarkets: allMarkets,
+        groupedMarkets: filtered,
         isSearching: false 
       });
     } catch (error) {
       console.error('Market search error:', error);
-      set({ markets: [], groupedMarkets: [], isSearching: false });
+      set({ markets: [], groupedMarkets: [], allGroupedMarkets: [], isSearching: false });
     }
   },
   
@@ -150,6 +273,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   // Decision Prompts
   decisionPrompt: null,
   setDecisionPrompt: (prompt) => set({ decisionPrompt: prompt }),
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   sendDecisionResponse: (promptId, action, response) => {
     // For now, just clear the prompt - can be extended for real interaction
     set({ decisionPrompt: null });

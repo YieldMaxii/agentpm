@@ -8,6 +8,13 @@ export interface MarketOutcome {
   odds: number;
   volume24h: number;
   liquidity: number;
+  resolved?: boolean;
+  clobTokenIds?: string[]; // Token IDs for CLOB price history API
+}
+
+export interface MarketTag {
+  slug: string;
+  label: string;
 }
 
 export interface GroupedMarket {
@@ -21,6 +28,8 @@ export interface GroupedMarket {
   totalVolume24h: number;
   totalLiquidity: number;
   hasArbitrage: boolean;
+  resolved?: boolean;
+  tags?: MarketTag[];
 }
 
 export interface NormalizedMarket {
@@ -44,6 +53,8 @@ export interface NormalizedMarket {
   // Reference to parent event if this is an outcome
   eventId?: string;
   eventTitle?: string;
+  // Whether this market has been resolved/closed
+  resolved?: boolean;
 }
 
 export interface PricePoint {

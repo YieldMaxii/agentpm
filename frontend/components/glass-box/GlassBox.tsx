@@ -7,8 +7,13 @@ import { DecisionCard } from './DecisionCard';
 import { Clock } from '@/components/Clock';
 import { Terminal, Circle } from 'lucide-react';
 import { useEffect, useRef } from 'react';
+import { cn } from '@/lib/utils';
 
-export function GlassBox() {
+interface GlassBoxProps {
+  isCollapsed?: boolean;
+}
+
+export function GlassBox({ isCollapsed = false }: GlassBoxProps) {
   const { logs, agentState, decisionPrompt } = useAgentStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -46,8 +51,34 @@ export function GlassBox() {
     }
   };
 
+  // Collapsed state - show minimal UI
+  if (isCollapsed) {
+    return (
+      <div className="h-full flex flex-col items-center py-4 pl-10">
+        <Terminal className="h-5 w-5 text-primary mb-2" />
+        <div 
+          className="text-xs font-medium text-muted-foreground"
+          style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+        >
+          Glass Box
+        </div>
+        <div className={cn(
+          "mt-2 text-[10px] font-mono",
+          getStatusColor()
+        )}>
+          {logs.length > 0 ? logs.length : '•'}
+        </div>
+        <Circle className={cn(
+          "h-2 w-2 mt-2 fill-current",
+          getStatusColor(),
+          agentState === 'running' && 'pulse-live'
+        )} />
+      </div>
+    );
+  }
+
   return (
-    <div className="h-full flex flex-col font-mono">
+    <div className="h-full flex flex-col font-mono pl-10">
       {/* Glass Box Header */}
       <div className="p-3 border-b border-border/50 bg-[hsl(220_20%_5%)]">
         <div className="flex items-center gap-2">
@@ -118,4 +149,3 @@ export function GlassBox() {
     </div>
   );
 }
-

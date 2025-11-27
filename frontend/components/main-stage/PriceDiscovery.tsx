@@ -2,13 +2,23 @@
 
 import { GroupedMarket } from '@/lib/types';
 import { AreaChart, Card } from '@tremor/react';
-import { Activity, Calendar, DollarSign, Droplets } from 'lucide-react';
+import { Activity, Calendar, DollarSign, Droplets, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 
 interface PriceDiscoveryProps {
   market: GroupedMarket | null;
 }
+
+// Timeframe options for the chart
+type Timeframe = '1D' | '1W' | '1M' | 'ALL';
+
+const TIMEFRAMES: { value: Timeframe; label: string }[] = [
+  { value: '1D', label: '1D' },
+  { value: '1W', label: '1W' },
+  { value: '1M', label: '1M' },
+  { value: 'ALL', label: 'All' },
+];
 
 // Vibrant color palette matching Polymarket style
 const OUTCOME_COLORS = [
@@ -22,12 +32,92 @@ const OUTCOME_COLORS = [
 
 const TREMOR_COLORS = ['green', 'blue', 'amber', 'pink', 'violet', 'cyan'] as const;
 
+interface PriceHistoryPoint {
+  timestamp: number;
+  price: number;
+  date: string;
+}
+
+interface PriceHistoryData {
+  [outcomeTitle: string]: PriceHistoryPoint[];
+}
+
 export function PriceDiscovery({ market }: PriceDiscoveryProps) {
-  // Memoize chart data to prevent regeneration on every render
+  const [timeframe, setTimeframe] = useState<Timeframe>('1D');
+  const [priceHistory, setPriceHistory] = useState<PriceHistoryData>({});
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Fetch historical price data for all outcomes
+  const fetchPriceHistory = useCallback(async (market: GroupedMarket, tf: Timeframe) => {
+    const outcomes = market.outcomes.slice(0, 6);
+    const historyData: PriceHistoryData = {};
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      // Fetch history for each outcome that has a clobTokenId
+      const fetchPromises = outcomes.map(async (outcome) => {
+        const tokenId = outcome.clobTokenIds?.[0];
+        if (!tokenId) {
+          console.log(`No token ID for outcome: ${outcome.title}`);
+          return { title: outcome.title, history: [] };
+        }
+        
+        try {
+          const response = await fetch(`/api/markets/history?tokenId=${encodeURIComponent(tokenId)}&timeframe=${tf}`);
+          if (!response.ok) {
+            console.error(`Failed to fetch history for ${outcome.title}`);
+            return { title: outcome.title, history: [] };
+          }
+          
+          const data = await response.json();
+          return { title: outcome.title, history: data.history || [] };
+        } catch (err) {
+          console.error(`Error fetching history for ${outcome.title}:`, err);
+          return { title: outcome.title, history: [] };
+        }
+      });
+      
+      const results = await Promise.all(fetchPromises);
+      
+      results.forEach(({ title, history }) => {
+        historyData[title] = history;
+      });
+      
+      setPriceHistory(historyData);
+    } catch (err) {
+      console.error('Error fetching price history:', err);
+      setError('Failed to load price history');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+  
+  // Fetch data when market or timeframe changes
+  useEffect(() => {
+    if (market) {
+      fetchPriceHistory(market, timeframe);
+    }
+  }, [market, timeframe, fetchPriceHistory]);
+  
+  // Generate chart data from real or simulated data
   const { chartData, maxY } = useMemo(() => {
     if (!market) return { chartData: [], maxY: 100 };
-    return generateMultiOutcomeChartData(market);
-  }, [market?.eventId, market?.outcomes?.length]);
+    
+    const outcomes = market.outcomes.slice(0, 6);
+    
+    // Check if we have real data for at least one outcome
+    const hasRealData = outcomes.some(o => priceHistory[o.title]?.length > 0);
+    
+    if (hasRealData) {
+      return generateChartFromRealData(outcomes, priceHistory, timeframe);
+    } else {
+      // Fallback to simulated data
+      return generateSimulatedChartData(market, timeframe);
+    }
+  }, [market, priceHistory, timeframe]);
 
   if (!market) {
     return (
@@ -69,30 +159,60 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
         </div>
       </div>
 
-      {/* Polymarket-style Legend (above chart) */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
-        {outcomes.map((outcome, idx) => {
-          const odds = outcome.odds * 100;
-          const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
-          return (
-            <div key={outcome.id} className="flex items-center gap-1.5">
-              <span 
-                className="w-2.5 h-2.5 rounded-full" 
-                style={{ backgroundColor: OUTCOME_COLORS[idx] }}
-              />
-              <span className="text-xs text-muted-foreground">
-                {outcome.title}
-              </span>
-              <span className="text-xs font-semibold" style={{ color: OUTCOME_COLORS[idx] }}>
-                {displayOdds}%
-              </span>
-            </div>
-          );
-        })}
+      {/* Polymarket-style Legend & Timeframe Selector */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {outcomes.map((outcome, idx) => {
+            const odds = outcome.odds * 100;
+            const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
+            return (
+              <div key={outcome.id} className="flex items-center gap-1.5">
+                <span 
+                  className="w-2.5 h-2.5 rounded-full" 
+                  style={{ backgroundColor: OUTCOME_COLORS[idx] }}
+                />
+                <span className="text-xs text-muted-foreground">
+                  {outcome.title}
+                </span>
+                <span className="text-xs font-semibold" style={{ color: OUTCOME_COLORS[idx] }}>
+                  {displayOdds}%
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        
+        {/* Timeframe Selector */}
+        <div className="flex items-center gap-0.5 bg-secondary/50 rounded-md p-0.5">
+          {TIMEFRAMES.map((tf) => (
+            <button
+              key={tf.value}
+              onClick={() => setTimeframe(tf.value)}
+              className={cn(
+                'px-2 py-1 text-[10px] font-medium rounded transition-colors',
+                timeframe === tf.value
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
+              )}
+            >
+              {tf.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Multi-Outcome Chart */}
-      <Card className="flex-[2] min-h-0 bg-card/50 border-border p-2">
+      <Card className="flex-[2] min-h-0 bg-card/50 border-border p-2 relative">
+        {isLoading && (
+          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10 rounded-lg">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </div>
+        )}
+        {error && (
+          <div className="absolute top-2 left-2 text-xs text-yellow-500 flex items-center gap-1">
+            <span>⚠️ Using simulated data</span>
+          </div>
+        )}
         <div className="h-full">
           <AreaChart
             className="h-full"
@@ -181,60 +301,178 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
   );
 }
 
-function generateMultiOutcomeChartData(market: GroupedMarket): { chartData: Record<string, string | number>[]; maxY: number } {
-  const data: Record<string, string | number>[] = [];
-  const outcomes = market.outcomes.slice(0, 6);
+// Timeframe formatting configuration
+const TIMEFRAME_FORMAT: Record<Timeframe, (date: Date) => string> = {
+  '1D': (date) => date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+  '1W': (date) => date.toLocaleDateString('en-US', { weekday: 'short', hour: 'numeric', hour12: true }),
+  '1M': (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+  'ALL': (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+};
+
+interface OutcomeInfo {
+  title: string;
+  odds: number;
+  clobTokenIds?: string[];
+}
+
+function generateChartFromRealData(
+  outcomes: OutcomeInfo[], 
+  priceHistory: PriceHistoryData,
+  timeframe: Timeframe
+): { chartData: Record<string, string | number>[]; maxY: number } {
   
-  // Track max value for Y-axis scaling
+  // Collect all unique timestamps across all outcomes
+  const allTimestamps = new Set<number>();
+  outcomes.forEach(outcome => {
+    const history = priceHistory[outcome.title] || [];
+    history.forEach(point => allTimestamps.add(point.timestamp));
+  });
+  
+  // Sort timestamps
+  const sortedTimestamps = Array.from(allTimestamps).sort((a, b) => a - b);
+  
+  if (sortedTimestamps.length === 0) {
+    // No real data, return empty
+    return { chartData: [], maxY: 100 };
+  }
+  
+  // Subsample if we have too many points (keep around 50-100 for performance)
+  let timestamps = sortedTimestamps;
+  if (sortedTimestamps.length > 100) {
+    const step = Math.floor(sortedTimestamps.length / 80);
+    timestamps = sortedTimestamps.filter((_, i) => i % step === 0 || i === sortedTimestamps.length - 1);
+  }
+  
+  const formatTime = TIMEFRAME_FORMAT[timeframe];
   let maxY = 0;
   
-  // Generate 24 hours of historical data
-  const numPoints = 48; // More points for smoother lines
+  const chartData: Record<string, string | number>[] = timestamps.map(timestamp => {
+    const date = new Date(timestamp * 1000);
+    const point: Record<string, string | number> = {
+      time: formatTime(date),
+    };
+    
+    outcomes.forEach(outcome => {
+      const history = priceHistory[outcome.title] || [];
+      
+      // Find the closest price point to this timestamp
+      let price = outcome.odds; // fallback to current odds
+      
+      // Binary search or linear search for closest timestamp
+      for (let i = 0; i < history.length; i++) {
+        if (history[i].timestamp <= timestamp) {
+          price = history[i].price;
+        } else {
+          break;
+        }
+      }
+      
+      // If no data before this timestamp, use the first available
+      if (history.length > 0 && history[0].timestamp > timestamp) {
+        price = history[0].price;
+      }
+      
+      const odds = price * 100;
+      point[outcome.title] = Number(odds.toFixed(1));
+      maxY = Math.max(maxY, odds);
+    });
+    
+    return point;
+  });
   
-  // Create base odds and trend for each outcome
+  // Ensure maxY has some padding
+  maxY = Math.max(maxY * 1.1, 20);
+  
+  return { chartData, maxY };
+}
+
+// Timeframe configuration for simulated chart data
+const SIMULATED_TIMEFRAME_CONFIG: Record<Timeframe, { 
+  numPoints: number; 
+  intervalMinutes: number; 
+  formatTime: (date: Date) => string;
+  volatilityScale: number;
+  trendVariance: number;
+}> = {
+  '1D': {
+    numPoints: 48,
+    intervalMinutes: 30,
+    formatTime: (date) => date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+    volatilityScale: 1,
+    trendVariance: 30,
+  },
+  '1W': {
+    numPoints: 42,
+    intervalMinutes: 60 * 4,
+    formatTime: (date) => date.toLocaleDateString('en-US', { weekday: 'short', hour: 'numeric', hour12: true }),
+    volatilityScale: 1.5,
+    trendVariance: 40,
+  },
+  '1M': {
+    numPoints: 30,
+    intervalMinutes: 60 * 24,
+    formatTime: (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    volatilityScale: 2,
+    trendVariance: 50,
+  },
+  'ALL': {
+    numPoints: 52,
+    intervalMinutes: 60 * 24 * 7,
+    formatTime: (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    volatilityScale: 3,
+    trendVariance: 60,
+  },
+};
+
+function generateSimulatedChartData(market: GroupedMarket, timeframe: Timeframe): { chartData: Record<string, string | number>[]; maxY: number } {
+  const data: Record<string, string | number>[] = [];
+  const outcomes = market.outcomes.slice(0, 6);
+  const config = SIMULATED_TIMEFRAME_CONFIG[timeframe];
+  
+  let maxY = 0;
+  
+  const { numPoints, intervalMinutes, formatTime, volatilityScale, trendVariance } = config;
+  
+  let seed = hashCode(market.eventId + timeframe);
+  const seededRandom = () => {
+    seed++;
+    const x = Math.sin(seed) * 10000;
+    return x - Math.floor(x);
+  };
+  
   const outcomeData = outcomes.map((outcome) => {
     const currentOdds = outcome.odds * 100;
-    // Random historical starting point (within reasonable range of current)
-    const startingOdds = Math.max(1, Math.min(99, currentOdds + (Math.random() - 0.5) * 30));
+    const startingOdds = Math.max(1, Math.min(99, currentOdds + (seededRandom() - 0.5) * trendVariance));
     return {
       title: outcome.title,
       currentOdds,
       startingOdds,
-      // Trend direction to end near current odds
       trendPerPoint: (currentOdds - startingOdds) / numPoints,
+      phaseOffset: seededRandom() * Math.PI * 2,
     };
   });
   
   for (let i = 0; i < numPoints; i++) {
     const time = new Date();
-    time.setMinutes(time.getMinutes() - (numPoints - i) * 30); // 30-minute intervals
+    time.setMinutes(time.getMinutes() - (numPoints - i) * intervalMinutes);
     
     const point: Record<string, string | number> = {
-      time: time.toLocaleTimeString('en-US', { 
-        hour: 'numeric', 
-        minute: '2-digit',
-        hour12: true 
-      }),
+      time: formatTime(time),
     };
     
-    // Generate data for each outcome
-    outcomeData.forEach(({ title, startingOdds, trendPerPoint, currentOdds }) => {
-      // Calculate base value trending toward current odds
+    outcomeData.forEach(({ title, startingOdds, trendPerPoint, currentOdds, phaseOffset }) => {
       let odds = startingOdds + (trendPerPoint * i);
       
-      // Add some market volatility (more at the start, settling toward current)
       const volatilityFactor = 1 - (i / numPoints) * 0.7;
-      const noise = (Math.sin(i * 0.3) * 5 + Math.cos(i * 0.7) * 3) * volatilityFactor;
-      const randomNoise = (Math.random() - 0.5) * 4 * volatilityFactor;
+      const noise = (Math.sin(i * 0.3 + phaseOffset) * 5 + Math.cos(i * 0.7 + phaseOffset) * 3) * volatilityFactor * volatilityScale;
+      const randomNoise = (seededRandom() - 0.5) * 4 * volatilityFactor * volatilityScale;
       
       odds = odds + noise + randomNoise;
       
-      // For the last point, use the actual current odds
       if (i === numPoints - 1) {
         odds = currentOdds;
       }
       
-      // Clamp to valid range
       odds = Math.max(0.5, Math.min(99.5, odds));
       
       point[title] = Number(odds.toFixed(1));
@@ -244,10 +482,19 @@ function generateMultiOutcomeChartData(market: GroupedMarket): { chartData: Reco
     data.push(point);
   }
   
-  // Ensure maxY has some padding (at least 10% above highest point)
   maxY = Math.max(maxY * 1.1, 20);
   
   return { chartData: data, maxY };
+}
+
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash);
 }
 
 function formatNumber(num: number): string {
