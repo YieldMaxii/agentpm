@@ -1,6 +1,6 @@
 'use client';
 
-import { GroupedMarket } from '@/lib/types';
+import { GroupedMarket, VolumeTimeframe } from '@/lib/types';
 import { AreaChart, Card } from '@tremor/react';
 import { Activity, Calendar, DollarSign, Droplets, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -18,6 +18,14 @@ const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: '1W', label: '1W' },
   { value: '1M', label: '1M' },
   { value: 'ALL', label: 'All' },
+];
+
+// Volume timeframe options
+const VOLUME_TIMEFRAMES: { value: VolumeTimeframe; label: string }[] = [
+  { value: 'total', label: 'Total' },
+  { value: '1mo', label: '1M' },
+  { value: '1wk', label: '1W' },
+  { value: '24h', label: '24H' },
 ];
 
 // Vibrant color palette matching Polymarket style
@@ -44,6 +52,7 @@ interface PriceHistoryData {
 
 export function PriceDiscovery({ market }: PriceDiscoveryProps) {
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
+  const [volumeTimeframe, setVolumeTimeframe] = useState<VolumeTimeframe>('total');
   const [priceHistory, setPriceHistory] = useState<PriceHistoryData>({});
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,16 +161,40 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
     );
   }
 
-  const outcomes = market.outcomes.slice(0, 6);
+  // Top 6 outcomes for chart and legend
+  const chartOutcomes = market.outcomes.slice(0, 6);
+  // ALL outcomes for the table below
+  const allOutcomes = market.outcomes;
   
   // Filter outcomes for chart based on visibility
-  const visibleOutcomes = outcomes.filter(o => !hiddenOutcomes.has(o.title));
+  const visibleOutcomes = chartOutcomes.filter(o => !hiddenOutcomes.has(o.title));
   const visibleOutcomeNames = visibleOutcomes.map(o => o.title);
   
   // Build colors array maintaining original indices for consistency
-  const visibleColors = outcomes
+  const visibleColors = chartOutcomes
     .map((o, idx) => hiddenOutcomes.has(o.title) ? null : TREMOR_COLORS[idx])
     .filter((c): c is typeof TREMOR_COLORS[number] => c !== null);
+
+  // Helper to get volume based on selected timeframe
+  const getMarketVolume = () => {
+    switch (volumeTimeframe) {
+      case 'total': return market.totalVolumeTotal || market.totalVolume24h;
+      case '1mo': return market.totalVolume1mo || 0;
+      case '1wk': return market.totalVolume1wk || 0;
+      case '24h': return market.totalVolume24h;
+      default: return market.totalVolumeTotal || market.totalVolume24h;
+    }
+  };
+
+  const getOutcomeVolume = (outcome: typeof allOutcomes[0]) => {
+    switch (volumeTimeframe) {
+      case 'total': return outcome.volumeTotal || outcome.volume24h;
+      case '1mo': return outcome.volume1mo || 0;
+      case '1wk': return outcome.volume1wk || 0;
+      case '24h': return outcome.volume24h;
+      default: return outcome.volumeTotal || outcome.volume24h;
+    }
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -176,12 +209,29 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
             </span>
             <span className="flex items-center gap-1">
               <DollarSign className="h-3 w-3" />
-              ${formatNumber(market.totalVolume24h)} Vol
+              ${formatNumber(getMarketVolume())} Vol
             </span>
             <span className="flex items-center gap-1">
               <Droplets className="h-3 w-3" />
               ${formatNumber(market.totalLiquidity || 0)} Liq
             </span>
+            {/* Volume Timeframe Toggle */}
+            <div className="flex items-center gap-0.5 bg-secondary/50 rounded-md p-0.5 ml-2">
+              {VOLUME_TIMEFRAMES.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setVolumeTimeframe(value)}
+                  className={cn(
+                    "px-1.5 py-0.5 rounded text-[10px] font-medium transition-all",
+                    volumeTimeframe === value
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -189,7 +239,7 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
       {/* Polymarket-style Legend & Timeframe Selector */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          {outcomes.map((outcome, idx) => {
+          {chartOutcomes.map((outcome, idx) => {
             const odds = outcome.odds * 100;
             const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
             const isHidden = hiddenOutcomes.has(outcome.title);
@@ -319,47 +369,60 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
           <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide text-right pb-1">% Chance</div>
           <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide text-right pb-1">Volume</div>
           
-          {/* Outcome rows - clickable to toggle chart visibility */}
-          {outcomes.map((outcome, idx) => {
+          {/* Outcome rows - ALL outcomes shown, top 6 are clickable to toggle chart visibility */}
+          {allOutcomes.map((outcome, idx) => {
             const odds = outcome.odds * 100;
             const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
-            const isHidden = hiddenOutcomes.has(outcome.title);
+            // Only first 6 outcomes are shown on chart
+            const isOnChart = idx < 6;
+            const isHidden = isOnChart && hiddenOutcomes.has(outcome.title);
+            // Get color - first 6 get vibrant colors, rest get a muted color
+            const outcomeColor = idx < 6 ? OUTCOME_COLORS[idx] : '#6b7280';
             
             return (
               <div 
                 key={outcome.id} 
                 className={cn(
-                  "contents group cursor-pointer",
+                  "contents group",
+                  isOnChart && "cursor-pointer",
                   isHidden && "opacity-40"
                 )}
-                onClick={() => toggleOutcome(outcome.title)}
-                title={isHidden ? `Show ${outcome.title} on chart` : `Hide ${outcome.title} from chart`}
+                onClick={isOnChart ? () => toggleOutcome(outcome.title) : undefined}
+                title={isOnChart ? (isHidden ? `Show ${outcome.title} on chart` : `Hide ${outcome.title} from chart`) : undefined}
               >
-                <div className="flex items-center py-1.5 border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30">
+                <div className={cn(
+                  "flex items-center py-1.5 border-t border-border/30 group-first:border-t-0",
+                  isOnChart && "group-hover:bg-secondary/30"
+                )}>
                   <span 
                     className={cn(
                       "w-2 h-2 rounded-full transition-all",
                       isHidden && "ring-1 ring-muted-foreground"
                     )}
                     style={{ 
-                      backgroundColor: isHidden ? 'transparent' : OUTCOME_COLORS[idx],
+                      backgroundColor: isHidden ? 'transparent' : outcomeColor,
                     }}
                   />
                 </div>
                 <div className={cn(
-                  "py-1.5 truncate border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30 transition-colors",
+                  "py-1.5 truncate border-t border-border/30 group-first:border-t-0 transition-colors",
+                  isOnChart && "group-hover:bg-secondary/30",
                   isHidden ? "text-muted-foreground line-through" : "text-foreground"
                 )}>
                   {outcome.title}
                 </div>
                 <div className={cn(
-                  'py-1.5 font-mono font-bold text-right tabular-nums text-sm border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30 transition-colors',
+                  'py-1.5 font-mono font-bold text-right tabular-nums text-sm border-t border-border/30 group-first:border-t-0 transition-colors',
+                  isOnChart && "group-hover:bg-secondary/30",
                   isHidden ? 'text-muted-foreground' : odds >= 50 ? 'text-primary' : odds >= 20 ? 'text-foreground' : 'text-muted-foreground'
                 )}>
                   {displayOdds}%
                 </div>
-                <div className="py-1.5 font-mono text-muted-foreground text-right tabular-nums border-t border-border/30 group-first:border-t-0 group-hover:bg-secondary/30 transition-colors">
-                  ${formatNumber(outcome.volume24h)}
+                <div className={cn(
+                  "py-1.5 font-mono text-muted-foreground text-right tabular-nums border-t border-border/30 group-first:border-t-0 transition-colors",
+                  isOnChart && "group-hover:bg-secondary/30"
+                )}>
+                  ${formatNumber(getOutcomeVolume(outcome))}
                 </div>
               </div>
             );

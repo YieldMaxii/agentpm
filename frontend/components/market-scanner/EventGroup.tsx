@@ -15,7 +15,8 @@ interface EventGroupProps {
 export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasMultipleOutcomes = event.outcomes.length > 1;
-  const volume = formatVolume(event.totalVolume24h);
+  // Use total volume as default, falling back to 24h if total not available
+  const volume = formatVolume(event.totalVolumeTotal || event.totalVolume24h);
   const isResolved = event.resolved === true;
   
   // For single outcome events, show the outcome odds
@@ -42,9 +43,9 @@ export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) 
       <button
         onClick={handleClick}
         className={cn(
-          'w-full grid gap-2 items-center px-2 py-2 text-left transition-colors duration-150',
+          'w-full grid gap-1 items-center px-2 py-2 text-left transition-colors duration-150',
           'hover:bg-secondary/50',
-          'grid-cols-[16px_1fr_70px_80px]',
+          'grid-cols-[16px_1fr_36px_48px]',
           isActive && 'bg-secondary/80',
           isResolved && 'opacity-50'
         )}
@@ -86,14 +87,14 @@ export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) 
 
         {/* Odds (top outcome for multi-outcome) */}
         <span className={cn(
-          'text-xs font-mono font-semibold text-right tabular-nums',
+          'text-[10px] font-mono font-semibold text-right tabular-nums',
           displayOdds >= 50 ? 'text-primary' : 'text-muted-foreground'
         )}>
-          {hasMultipleOutcomes ? '—' : `${displayOdds.toFixed(1)}%`}
+          {hasMultipleOutcomes ? '—' : `${displayOdds.toFixed(0)}%`}
         </span>
 
         {/* Volume */}
-        <span className="text-[10px] font-mono text-muted-foreground text-right tabular-nums">
+        <span className="text-[9px] font-mono text-muted-foreground text-right tabular-nums">
           ${volume}
         </span>
       </button>
@@ -103,14 +104,15 @@ export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) 
         <div className="bg-secondary/30 border-t border-border/30">
           {event.outcomes.slice(0, 6).map((outcome, idx) => {
             const outcomeOdds = outcome.odds * 100;
-            const outcomeVolume = formatVolume(outcome.volume24h);
+            // Use total volume as default for expanded outcomes too
+            const outcomeVolume = formatVolume(outcome.volumeTotal || outcome.volume24h);
             // Assign colors to match the chart
             const colors = ['bg-emerald-500', 'bg-amber-500', 'bg-cyan-500', 'bg-violet-500', 'bg-rose-500', 'bg-blue-500'];
             
             return (
               <div
                 key={outcome.id}
-                className="w-full grid grid-cols-[16px_1fr_60px_70px] gap-2 items-center px-2 py-1.5"
+                className="w-full grid grid-cols-[16px_1fr_36px_48px] gap-1 items-center px-2 py-1.5"
               >
                 {/* Color indicator */}
                 <span className="flex items-center justify-center">
@@ -124,14 +126,14 @@ export function EventGroup({ event, isActive, onSelectEvent }: EventGroupProps) 
 
                 {/* Odds */}
                 <span className={cn(
-                  'text-[11px] font-mono font-medium text-right tabular-nums',
+                  'text-[10px] font-mono font-medium text-right tabular-nums',
                   outcomeOdds >= 50 ? 'text-primary' : 'text-muted-foreground'
                 )}>
-                  {outcomeOdds.toFixed(1)}%
+                  {outcomeOdds.toFixed(0)}%
                 </span>
 
                 {/* Volume */}
-                <span className="text-[10px] font-mono text-muted-foreground/70 text-right tabular-nums">
+                <span className="text-[9px] font-mono text-muted-foreground/70 text-right tabular-nums">
                   ${outcomeVolume}
                 </span>
               </div>

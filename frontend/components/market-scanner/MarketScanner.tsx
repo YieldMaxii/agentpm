@@ -137,8 +137,8 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
 
       {/* Column Headers */}
       <div className={cn(
-        "grid gap-2 px-3 py-2 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50",
-        "grid-cols-[16px_1fr_70px_80px]"
+        "grid gap-1 px-3 py-2 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50",
+        "grid-cols-[16px_1fr_36px_48px]"
       )}>
         <span></span>
         <span>Event</span>

@@ -22,13 +22,16 @@ interface PolymarketMarket {
   resolved?: boolean;
   outcomePrices?: string | string[];
   volume24hr?: string;
-  volume?: string;
+  volume1wk?: string;
+  volume1mo?: string;
+  volume?: string; // Total volume
   liquidity?: string;
   groupItemTitle?: string;
   question?: string;
   slug?: string;
   description?: string;
   endDate?: string;
+  clobTokenIds?: string;
 }
 
 export async function GET(request: Request) {
@@ -88,7 +91,10 @@ export async function GET(request: Request) {
     for (const event of events) {
       const eventMarkets = event.markets || [];
       const outcomes: MarketOutcome[] = [];
-      let totalVolume = 0;
+      let totalVolume24h = 0;
+      let totalVolume1wk = 0;
+      let totalVolume1mo = 0;
+      let totalVolumeTotal = 0;
       let totalLiquidity = 0;
       
       // Check if the entire event is resolved/closed
@@ -98,11 +104,14 @@ export async function GET(request: Request) {
         // Skip placeholder markets (like "Individual T", "Individual P", etc.)
         // These have no prices, no volume, and no liquidity
         const hasValidPrices = market.outcomePrices !== undefined && market.outcomePrices !== null;
-        const volume = parseFloat(market.volume24hr || market.volume || '0') || 0;
+        const volume24h = parseFloat(market.volume24hr || '0') || 0;
+        const volume1wk = parseFloat(market.volume1wk || '0') || 0;
+        const volume1mo = parseFloat(market.volume1mo || '0') || 0;
+        const volumeTotal = parseFloat(market.volume || '0') || 0;
         const liquidity = parseFloat(market.liquidity || '0') || 0;
         
         // If no valid prices AND no volume/liquidity, skip this placeholder
-        if (!hasValidPrices && volume === 0 && liquidity === 0) {
+        if (!hasValidPrices && volumeTotal === 0 && liquidity === 0) {
           continue;
         }
         
@@ -121,7 +130,10 @@ export async function GET(request: Request) {
         // Only consider it resolved if explicitly closed/resolved, not just low probability
         const isMarketResolved = market.closed === true || market.resolved === true;
         
-        totalVolume += volume;
+        totalVolume24h += volume24h;
+        totalVolume1wk += volume1wk;
+        totalVolume1mo += volume1mo;
+        totalVolumeTotal += volumeTotal;
         totalLiquidity += liquidity;
         
         // Get outcome title - this is the specific outcome within the event
@@ -143,11 +155,14 @@ export async function GET(request: Request) {
           id: market.id || `${event.id}-${outcomes.length}`,
           title: outcomeTitle,
           odds: yesPrice,
-          volume24h: volume,
+          volume24h: volume24h,
+          volume1wk: volume1wk,
+          volume1mo: volume1mo,
+          volumeTotal: volumeTotal,
           liquidity: liquidity,
           resolved: isMarketResolved,
           clobTokenIds: tokenIds,
-        } as MarketOutcome);
+        });
 
         // Also add to flat markets for backward compatibility
         flatMarkets.push({
@@ -158,7 +173,7 @@ export async function GET(request: Request) {
           normalizedOdds: {
             polymarket: yesPrice,
           },
-          volume24h: volume,
+          volume24h: volume24h,
           liquidity: liquidity,
           endDate: market.endDate || event.endDate || '',
           category: event.category,
@@ -166,7 +181,7 @@ export async function GET(request: Request) {
           eventId: event.id,
           eventTitle: event.title,
           resolved: isMarketResolved || isEventResolved,
-        } as NormalizedMarket);
+        });
       }
 
       // Create grouped market entry for this event
@@ -191,7 +206,10 @@ export async function GET(request: Request) {
           category: event.category,
           endDate: event.endDate || '',
           outcomes: outcomes,
-          totalVolume24h: totalVolume,
+          totalVolume24h: totalVolume24h,
+          totalVolume1wk: totalVolume1wk,
+          totalVolume1mo: totalVolume1mo,
+          totalVolumeTotal: totalVolumeTotal,
           totalLiquidity: totalLiquidity,
           hasArbitrage: false,
           resolved: isEventResolved || allOutcomesResolved,

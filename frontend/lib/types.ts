@@ -7,6 +7,9 @@ export interface MarketOutcome {
   title: string;
   odds: number;
   volume24h: number;
+  volume1wk?: number;
+  volume1mo?: number;
+  volumeTotal: number;
   liquidity: number;
   resolved?: boolean;
   clobTokenIds?: string[]; // Token IDs for CLOB price history API
@@ -26,11 +29,16 @@ export interface GroupedMarket {
   endDate: string;
   outcomes: MarketOutcome[];
   totalVolume24h: number;
+  totalVolume1wk?: number;
+  totalVolume1mo?: number;
+  totalVolumeTotal: number;
   totalLiquidity: number;
   hasArbitrage: boolean;
   resolved?: boolean;
   tags?: MarketTag[];
 }
+
+export type VolumeTimeframe = '24h' | '1wk' | '1mo' | 'total';
 
 export interface NormalizedMarket {
   id: string;
