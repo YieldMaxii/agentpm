@@ -1,16 +1,21 @@
 from langflow.custom import Component
-from langflow.io import MessageInput, Output
+from langflow.io import DataInput, Output
 from langflow.schema import Data
 import http.client
 import json
 import re
+import os
+from dotenv import load_dotenv
+from pathlib import Path
+import datetime
+
 
 class MarketResolver(Component):
     display_name = "Market Resolver (Scope Aware)"
-    description = "Prioritizes Main Event Groups over specific side-bets."
+    description = "Prioritizes Main Event Groups over specific side-bets. Accepts routed data from SmartRouter."
 
     inputs = [
-        MessageInput(name="user_query", display_name="User Question"),
+        DataInput(name="router_data", display_name="Router Data"),
     ]
 
     outputs = [
@@ -18,10 +23,28 @@ class MarketResolver(Component):
     ]
 
     def resolve_slug(self) -> Data:
-        import datetime
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        query = self.user_query.text if hasattr(self.user_query, 'text') else str(self.user_query)
-        logs = [f"🕒 **{timestamp}** - Resolver Input: '{query}'"]
+        
+        # Handle input from SmartRouter (Data)
+        if not self.router_data or not hasattr(self.router_data, 'data'):
+            return None  # No data, don't process
+        
+        input_data = self.router_data.data
+        router_decision = input_data.get("router_decision", "")
+        
+        # SELF-FILTER: Only process COMPLEX queries
+        if router_decision != "COMPLEX":
+            # Return skip marker instead of None so the chain continues
+            return Data(data={"__skip__": True, "logs": ["⏭️ Skipped - SIMPLE query"]})
+        
+        query = input_data.get("original_query", "")
+        logs = input_data.get("logs", []).copy()
+        
+        if not query:
+            logs.append("⚠️ **Resolver:** No query provided.")
+            return Data(data={"slug": None, "logs": logs, "original_query": query})
+        
+        logs.append(f"🕒 **{timestamp}** - Resolver Input: '{query}'")
         
         # IMPROVED PROMPT: Explicit instruction to find the "Parent" market
         prompt = (
@@ -36,9 +59,9 @@ class MarketResolver(Component):
         
         try:
             conn = http.client.HTTPSConnection("api.perplexity.ai")
-            import os
-            from dotenv import load_dotenv
-            load_dotenv()
+            # Load .env from project root (parent of components/)
+            env_path = Path(__file__).parent.parent / '.env'
+            load_dotenv(dotenv_path=env_path)
             HARDCODED_KEY = os.getenv("PERPLEXITY_API_KEY")
             if not HARDCODED_KEY:
                 logs.append("❌ **Resolver Error:** PERPLEXITY_API_KEY not set.")
