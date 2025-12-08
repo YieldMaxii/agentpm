@@ -162,6 +162,7 @@ export async function GET(request: Request) {
           liquidity: liquidity,
           resolved: isMarketResolved,
           clobTokenIds: tokenIds,
+          platform: 'polymarket',
         });
 
         // Also add to flat markets for backward compatibility
@@ -181,6 +182,7 @@ export async function GET(request: Request) {
           eventId: event.id,
           eventTitle: event.title,
           resolved: isMarketResolved || isEventResolved,
+          platform: 'polymarket',
         });
       }
 
@@ -214,6 +216,7 @@ export async function GET(request: Request) {
           hasArbitrage: false,
           resolved: isEventResolved || allOutcomesResolved,
           tags: tags,
+          platforms: ['polymarket'],
         });
       }
     }

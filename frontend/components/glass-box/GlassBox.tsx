@@ -51,46 +51,30 @@ export function GlassBox({ isCollapsed = false }: GlassBoxProps) {
     }
   };
 
-  // Collapsed state - show minimal UI
+  // Collapsed state - show minimal UI (kept for compatibility)
   if (isCollapsed) {
     return (
-      <div className="h-full flex flex-col items-center py-4 pl-10">
-        <Terminal className="h-5 w-5 text-primary mb-2" />
-        <div 
-          className="text-xs font-medium text-muted-foreground"
-          style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
-        >
-          Glass Box
-        </div>
-        <div className={cn(
-          "mt-2 text-[10px] font-mono",
-          getStatusColor()
-        )}>
-          {logs.length > 0 ? logs.length : '•'}
-        </div>
+      <div className="h-full flex flex-col items-center justify-center py-4">
         <Circle className={cn(
-          "h-2 w-2 mt-2 fill-current",
+          "h-3 w-3 fill-current mb-2",
           getStatusColor(),
           agentState === 'running' && 'pulse-live'
         )} />
+        <div className={cn(
+          "text-[10px] font-mono",
+          getStatusColor()
+        )}>
+          {logs.length > 0 ? logs.length : '—'}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col font-mono pl-10">
-      {/* Glass Box Header */}
-      <div className="p-3 border-b border-border/50 bg-[hsl(220_20%_5%)]">
-        <div className="flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-primary" />
-          <h2 className="font-semibold text-sm">Glass Box</h2>
-          <span className="text-xs text-muted-foreground ml-auto">
-            Agent Thought Stream
-          </span>
-        </div>
-        
-        {/* Status Indicator */}
-        <div className="flex items-center gap-2 mt-2 text-[10px]">
+    <div className="h-full flex flex-col font-mono">
+      {/* Status Bar */}
+      <div className="px-3 py-2 border-b border-border/50 bg-card/50">
+        <div className="flex items-center gap-2 text-[10px]">
           <Circle className={`h-2 w-2 fill-current ${getStatusColor()} ${agentState === 'running' ? 'pulse-live' : ''}`} />
           <span className={getStatusColor()}>{getStatusText()}</span>
           {logs.length > 0 && (

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { ChevronDown, Filter, X, TrendingUp, Clock, Timer, Droplets, SortAsc } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { MarketPlatform } from '@/lib/types';
 
 // Main categories that match Polymarket's structure
 export const MARKET_CATEGORIES = [
@@ -27,6 +28,16 @@ export const SORT_OPTIONS = [
   { value: 'alphabetical', label: 'A-Z', icon: SortAsc, description: 'Alphabetical order' },
 ] as const;
 
+// Available platforms for multi-select
+export const AVAILABLE_PLATFORMS: { value: MarketPlatform; label: string; color: string }[] = [
+  { value: 'polymarket', label: 'Polymarket', color: 'bg-blue-500' },
+  { value: 'kalshi', label: 'Kalshi', color: 'bg-emerald-500' },
+  // Future platforms can be added here:
+  // { value: 'predictit', label: 'PredictIt', color: 'bg-orange-500' },
+  // { value: 'metaculus', label: 'Metaculus', color: 'bg-cyan-500' },
+  // { value: 'manifold', label: 'Manifold', color: 'bg-pink-500' },
+];
+
 export type CategorySlug = typeof MARKET_CATEGORIES[number]['slug'];
 export type SortOption = typeof SORT_OPTIONS[number]['value'];
 
@@ -34,6 +45,8 @@ export interface MarketFilters {
   showResolved: boolean;
   category: CategorySlug;
   sortBy: SortOption;
+  selectedPlatforms: MarketPlatform[]; // Empty array = all platforms
+  crossPlatformOnly: boolean; // Only show markets available on multiple selected platforms
 }
 
 interface FilterPanelProps {
@@ -48,7 +61,59 @@ export function FilterPanel({ filters, onFiltersChange, totalCount, filteredCoun
   
   const activeCategory = MARKET_CATEGORIES.find(c => c.slug === filters.category) || MARKET_CATEGORIES[0];
   const activeSort = SORT_OPTIONS.find(s => s.value === filters.sortBy) || SORT_OPTIONS[0];
-  const hasActiveFilters = filters.showResolved || filters.category !== 'all' || filters.sortBy !== 'trending';
+  
+  // Determine platform filter state
+  const selectedPlatforms = filters.selectedPlatforms || [];
+  const allPlatformsSelected = selectedPlatforms.length === 0;
+  const hasActiveFilters = filters.showResolved || 
+    filters.category !== 'all' || 
+    filters.sortBy !== 'trending' || 
+    selectedPlatforms.length > 0 ||
+    filters.crossPlatformOnly;
+
+  // Toggle a platform in the selection
+  const togglePlatform = (platform: MarketPlatform) => {
+    const current = selectedPlatforms;
+    const isSelected = current.includes(platform);
+    
+    let newSelected: MarketPlatform[];
+    if (isSelected) {
+      // Remove platform
+      newSelected = current.filter(p => p !== platform);
+    } else {
+      // Add platform
+      newSelected = [...current, platform];
+    }
+    
+    // If all platforms are selected, treat as "all" (empty array)
+    if (newSelected.length === AVAILABLE_PLATFORMS.length) {
+      newSelected = [];
+    }
+    
+    onFiltersChange({ 
+      ...filters, 
+      selectedPlatforms: newSelected,
+      // Disable crossPlatformOnly if less than 2 platforms selected
+      crossPlatformOnly: newSelected.length >= 2 ? filters.crossPlatformOnly : false
+    });
+  };
+
+  // Get platform label for display
+  const getPlatformLabel = () => {
+    if (filters.crossPlatformOnly) {
+      return 'Cross-Platform';
+    }
+    if (allPlatformsSelected) {
+      return null;
+    }
+    if (selectedPlatforms.length === 1) {
+      const platform = AVAILABLE_PLATFORMS.find(p => p.value === selectedPlatforms[0]);
+      return platform?.label || selectedPlatforms[0];
+    }
+    return `${selectedPlatforms.length} Platforms`;
+  };
+
+  const platformLabel = getPlatformLabel();
 
   return (
     <div className="relative">
@@ -64,6 +129,17 @@ export function FilterPanel({ filters, onFiltersChange, totalCount, filteredCoun
       >
         <Filter className="h-3 w-3" />
         <span className="font-medium">{activeCategory.icon} {activeCategory.label}</span>
+        {platformLabel && (
+          <span className={cn(
+            'ml-1 px-1 py-0.5 text-[9px] rounded',
+            filters.crossPlatformOnly && 'bg-purple-500/20 text-purple-400',
+            !filters.crossPlatformOnly && selectedPlatforms.length === 1 && selectedPlatforms[0] === 'polymarket' && 'bg-blue-500/20 text-blue-400',
+            !filters.crossPlatformOnly && selectedPlatforms.length === 1 && selectedPlatforms[0] === 'kalshi' && 'bg-emerald-500/20 text-emerald-400',
+            !filters.crossPlatformOnly && selectedPlatforms.length > 1 && 'bg-gray-500/20 text-gray-400'
+          )}>
+            {platformLabel}
+          </span>
+        )}
         {filters.sortBy !== 'trending' && (
           <span className="ml-1 px-1 py-0.5 text-[9px] bg-secondary text-muted-foreground rounded">
             {activeSort.label}
@@ -99,9 +175,94 @@ export function FilterPanel({ filters, onFiltersChange, totalCount, filteredCoun
               </button>
             </div>
 
-            {/* Sort By */}
+            {/* Platform Filter */}
             <div className="p-2">
               <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 px-1">
+                Platforms
+              </div>
+              <div className="space-y-1">
+                {/* All Platforms toggle */}
+                <button
+                  onClick={() => onFiltersChange({ ...filters, selectedPlatforms: [], crossPlatformOnly: false })}
+                  className={cn(
+                    'w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors',
+                    'hover:bg-secondary/70',
+                    allPlatformsSelected && !filters.crossPlatformOnly
+                      ? 'bg-primary/20 text-primary font-medium' 
+                      : 'text-muted-foreground'
+                  )}
+                >
+                  <span className="w-2 h-2 rounded-full bg-gray-500" />
+                  <span>All Platforms</span>
+                </button>
+                
+                {/* Individual platform toggles */}
+                {AVAILABLE_PLATFORMS.map((platform) => {
+                  const isSelected = allPlatformsSelected || selectedPlatforms.includes(platform.value);
+                  return (
+                    <button
+                      key={platform.value}
+                      onClick={() => togglePlatform(platform.value)}
+                      className={cn(
+                        'w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors',
+                        'hover:bg-secondary/70',
+                        isSelected && !allPlatformsSelected
+                          ? 'bg-primary/20 text-primary font-medium' 
+                          : 'text-muted-foreground'
+                      )}
+                    >
+                      <span className={cn(
+                        'w-4 h-4 rounded border-2 flex items-center justify-center transition-colors',
+                        isSelected && !allPlatformsSelected
+                          ? 'border-primary bg-primary' 
+                          : 'border-muted-foreground/50'
+                      )}>
+                        {isSelected && !allPlatformsSelected && (
+                          <svg className="w-2.5 h-2.5 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </span>
+                      <span className={cn('w-2 h-2 rounded-full', platform.color)} />
+                      <span>{platform.label}</span>
+                    </button>
+                  );
+                })}
+
+                {/* Cross-Platform Only toggle - only show when 2+ platforms selected */}
+                {(allPlatformsSelected || selectedPlatforms.length >= 2) && (
+                  <button
+                    onClick={() => onFiltersChange({ ...filters, crossPlatformOnly: !filters.crossPlatformOnly })}
+                    className={cn(
+                      'w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors mt-2 border-t border-border/50 pt-2',
+                      'hover:bg-secondary/70',
+                      filters.crossPlatformOnly
+                        ? 'bg-purple-500/20 text-purple-400 font-medium' 
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    <span className={cn(
+                      'w-4 h-4 rounded border-2 flex items-center justify-center transition-colors',
+                      filters.crossPlatformOnly
+                        ? 'border-purple-400 bg-purple-400' 
+                        : 'border-muted-foreground/50'
+                    )}>
+                      {filters.crossPlatformOnly && (
+                        <svg className="w-2.5 h-2.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className="w-2 h-2 rounded-full bg-purple-500" />
+                    <span>Cross-Platform Only</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Sort By */}
+            <div className="p-2 pt-0 border-t border-border/50 mt-1">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 px-1 pt-2">
                 Sort By
               </div>
               <div className="space-y-0.5">
@@ -197,7 +358,13 @@ export function FilterPanel({ filters, onFiltersChange, totalCount, filteredCoun
                 <span>Showing {filteredCount.toLocaleString()} of {totalCount.toLocaleString()}</span>
                 {hasActiveFilters && (
                   <button
-                    onClick={() => onFiltersChange({ showResolved: false, category: 'all', sortBy: 'trending' })}
+                    onClick={() => onFiltersChange({ 
+                      showResolved: false, 
+                      category: 'all', 
+                      sortBy: 'trending', 
+                      selectedPlatforms: [],
+                      crossPlatformOnly: false
+                    })}
                     className="text-primary hover:underline"
                   >
                     Reset to defaults

@@ -5,7 +5,7 @@ import { EventGroup } from './EventGroup';
 import { FilterPanel } from './FilterPanel';
 import { useAgentStore } from '@/stores/agent-store';
 import { Search, TrendingUp, Loader2, RefreshCw } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useDebouncedCallback } from 'use-debounce';
 import { cn } from '@/lib/utils';
 
@@ -19,6 +19,8 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
     allGroupedMarkets,
     activeGroupedMarket,
     setActiveGroupedMarket,
+    activePlatform,
+    setActivePlatform,
     isSearching,
     searchMarkets,
     searchQuery,
@@ -26,6 +28,14 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
     filters,
     setFilters
   } = useAgentStore();
+  
+  // Calculate platform stats
+  const platformStats = useMemo(() => {
+    const polymarket = groupedMarkets.filter(m => m.platforms?.includes('polymarket')).length;
+    const kalshi = groupedMarkets.filter(m => m.platforms?.includes('kalshi')).length;
+    const crossPlatform = groupedMarkets.filter(m => (m.platforms?.length || 0) > 1).length;
+    return { polymarket, kalshi, crossPlatform };
+  }, [groupedMarkets]);
   
   const [localQuery, setLocalQuery] = useState(searchQuery);
   const [hasSearched, setHasSearched] = useState(false);
@@ -37,7 +47,7 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
       searchMarkets(query);
       setHasSearched(true);
     },
-    500
+    300 // Reduced from 500ms for faster response
   );
 
   // Handle input change
@@ -71,15 +81,11 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
   }, [hasSearched, groupedMarkets.length, searchMarkets]);
 
   // Collapsed state - show minimal UI
+  // Collapsed state (kept for compatibility)
   if (isCollapsed) {
     return (
-      <div className="h-full flex flex-col items-center py-4">
-        <TrendingUp className="h-5 w-5 text-primary mb-2" />
-        <div className="writing-mode-vertical text-xs font-medium text-muted-foreground rotate-180" 
-             style={{ writingMode: 'vertical-rl' }}>
-          Market Scanner
-        </div>
-        <div className="mt-2 text-[10px] text-muted-foreground font-mono">
+      <div className="h-full flex flex-col items-center justify-center py-4">
+        <div className="text-[10px] text-muted-foreground font-mono">
           {groupedMarkets.length}
         </div>
       </div>
@@ -88,18 +94,20 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
 
   return (
     <div className="h-full flex flex-col">
-      {/* Scanner Header */}
-      <div className="p-3 border-b border-border pr-12">
+      {/* Scanner Search & Stats */}
+      <div className="p-3 border-b border-border">
         <div className="flex items-center gap-2 mb-3">
-          <TrendingUp className="h-4 w-4 text-primary" />
-          <h2 className="font-semibold text-sm">Market Scanner</h2>
-          <span className="ml-auto text-xs text-muted-foreground font-mono">
+          <span className="text-xs text-muted-foreground font-mono">
             {isSearching ? (
-              <Loader2 className="h-3 w-3 animate-spin inline" />
-            ) : (
-              `${groupedMarkets.length} EVENTS`
-            )}
+              <Loader2 className="h-3 w-3 animate-spin inline mr-1" />
+            ) : null}
+            {groupedMarkets.length} events
           </span>
+          {platformStats.crossPlatform > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded">
+              {platformStats.crossPlatform} cross-platform
+            </span>
+          )}
         </div>
         
         {/* Search Input */}
@@ -108,7 +116,7 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <input
               type="text"
-              placeholder="Search Polymarket..."
+              placeholder="Search markets..."
               value={localQuery}
               onChange={handleSearchChange}
               className="w-full h-8 pl-8 pr-3 text-xs bg-secondary/50 border border-border rounded-md 
@@ -152,7 +160,7 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
           {isSearching ? (
             <div className="p-8 text-center">
               <Loader2 className="h-6 w-6 animate-spin mx-auto text-primary mb-2" />
-              <p className="text-xs text-muted-foreground">Searching Polymarket...</p>
+              <p className="text-xs text-muted-foreground">Searching Polymarket & Kalshi...</p>
             </div>
           ) : groupedMarkets.length > 0 ? (
             groupedMarkets.map((event) => (
@@ -160,7 +168,9 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
                 key={event.eventId}
                 event={event}
                 isActive={activeGroupedMarket?.eventId === event.eventId}
+                activePlatform={activeGroupedMarket?.eventId === event.eventId ? activePlatform : null}
                 onSelectEvent={setActiveGroupedMarket}
+                onSelectPlatform={setActivePlatform}
               />
             ))
           ) : hasSearched ? (
@@ -186,12 +196,30 @@ export function MarketScanner({ isCollapsed = false }: MarketScannerProps) {
 
       {/* Scanner Footer */}
       <div className="p-3 border-t border-border bg-card/50">
-        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-          <span>Source: Polymarket</span>
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+              <span>PM: {platformStats.polymarket}</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              <span>KL: {platformStats.kalshi}</span>
+            </span>
+            {platformStats.crossPlatform > 0 && (
+              <span className="flex items-center gap-1 text-amber-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                <span>Both: {platformStats.crossPlatform}</span>
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-primary pulse-live" />
             <span>LIVE</span>
           </div>
+        </div>
+        <div className="text-[9px] text-muted-foreground/60">
+          Sources: Polymarket + Kalshi
         </div>
       </div>
     </div>

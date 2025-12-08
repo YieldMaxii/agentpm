@@ -11,7 +11,9 @@ interface MarketRowProps {
 }
 
 export function MarketRow({ market, isActive, onClick }: MarketRowProps) {
-  const odds = market.normalizedOdds.polymarket * 100;
+  // Get odds from polymarket or kalshi, defaulting to 50%
+  const rawOdds = market.normalizedOdds.polymarket ?? market.normalizedOdds.kalshi ?? 0.5;
+  const odds = rawOdds * 100;
   const volume = formatVolume(market.volume24h);
   
   return (

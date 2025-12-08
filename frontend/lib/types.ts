@@ -2,6 +2,8 @@
 // Market Types
 // ============================================================
 
+export type MarketPlatform = 'polymarket' | 'kalshi' | 'predictit' | 'metaculus' | 'manifold';
+
 export interface MarketOutcome {
   id: string;
   title: string;
@@ -13,6 +15,7 @@ export interface MarketOutcome {
   liquidity: number;
   resolved?: boolean;
   clobTokenIds?: string[]; // Token IDs for CLOB price history API
+  platform: MarketPlatform; // Which platform this outcome is from
 }
 
 export interface MarketTag {
@@ -36,6 +39,24 @@ export interface GroupedMarket {
   hasArbitrage: boolean;
   resolved?: boolean;
   tags?: MarketTag[];
+  platforms: MarketPlatform[]; // Which platforms have this market
+  // Hierarchical grouping (optional series level above events)
+  seriesId?: string;
+  seriesTitle?: string;
+  // Cross-platform odds for comparison (when same market on multiple platforms)
+  crossPlatformOdds?: {
+    polymarket?: number;
+    kalshi?: number;
+  };
+  // For cross-platform view: contains the matching market from each platform
+  platformMarkets?: {
+    platform: MarketPlatform;
+    eventId: string;
+    eventTitle: string;
+    outcomes: MarketOutcome[];
+    totalVolume24h: number;
+    totalVolumeTotal: number;
+  }[];
 }
 
 export type VolumeTimeframe = '24h' | '1wk' | '1mo' | 'total';
@@ -46,7 +67,7 @@ export interface NormalizedMarket {
   slug: string;
   description?: string;
   normalizedOdds: {
-    polymarket: number;
+    polymarket?: number;
     kalshi?: number;
     predictit?: number;
     azuro?: number;
@@ -63,6 +84,8 @@ export interface NormalizedMarket {
   eventTitle?: string;
   // Whether this market has been resolved/closed
   resolved?: boolean;
+  // Primary platform source
+  platform: MarketPlatform;
 }
 
 export interface PricePoint {
@@ -184,6 +207,55 @@ export interface PolymarketEvent {
   liquidity: string;
   endDate: string;
   category?: string;
+}
+
+// ============================================================
+// Kalshi API Types
+// ============================================================
+
+export interface KalshiMarket {
+  ticker: string;
+  event_ticker: string;
+  title: string;
+  subtitle?: string;
+  yes_sub_title?: string;
+  no_sub_title?: string;
+  open_time?: string;
+  close_time?: string;
+  expected_expiration_time?: string;
+  expiration_time?: string;
+  status: string; // 'open', 'closed', 'settled', 'finalized', etc.
+  yes_bid?: number;
+  yes_ask?: number;
+  no_bid?: number;
+  no_ask?: number;
+  last_price?: number;
+  previous_yes_bid?: number;
+  previous_yes_ask?: number;
+  previous_price?: number;
+  volume?: number;
+  volume_24h?: number;
+  liquidity?: number;
+  open_interest?: number;
+  result?: 'yes' | 'no' | 'all_yes' | 'all_no';
+  category?: string;
+  series_ticker?: string;
+  can_close_early?: boolean;
+  risk_limit_cents?: number;
+  notional_value?: number;
+  tick_size?: number;
+  yes_floor_cents?: number;
+  no_floor_cents?: number;
+  settlement_value?: number;
+  settlement_timer_seconds?: number;
+  cap_strike?: number;
+  rules_primary?: string;
+  rules_secondary?: string;
+}
+
+export interface KalshiMarketsResponse {
+  markets: KalshiMarket[];
+  cursor?: string;
 }
 
 // ============================================================

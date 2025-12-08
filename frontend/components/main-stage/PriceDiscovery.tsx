@@ -1,6 +1,6 @@
 'use client';
 
-import { GroupedMarket, VolumeTimeframe } from '@/lib/types';
+import { GroupedMarket, VolumeTimeframe, MarketPlatform } from '@/lib/types';
 import { AreaChart, Card } from '@tremor/react';
 import { Activity, Calendar, DollarSign, Droplets, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 
 interface PriceDiscoveryProps {
   market: GroupedMarket | null;
+  activePlatform?: MarketPlatform | null;
 }
 
 // Timeframe options for the chart
@@ -50,7 +51,7 @@ interface PriceHistoryData {
   [outcomeTitle: string]: PriceHistoryPoint[];
 }
 
-export function PriceDiscovery({ market }: PriceDiscoveryProps) {
+export function PriceDiscovery({ market, activePlatform }: PriceDiscoveryProps) {
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
   const [volumeTimeframe, setVolumeTimeframe] = useState<VolumeTimeframe>('total');
   const [priceHistory, setPriceHistory] = useState<PriceHistoryData>({});
@@ -58,6 +59,48 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
   const [error, setError] = useState<string | null>(null);
   // Track which outcomes are visible on the chart (all visible by default)
   const [hiddenOutcomes, setHiddenOutcomes] = useState<Set<string>>(new Set());
+  
+  // Get the relevant platform market data
+  const platformMarketData = useMemo(() => {
+    if (!market) return null;
+    
+    // If this market has platformMarkets (cross-platform), use the selected platform's data
+    if (market.platformMarkets && market.platformMarkets.length > 0 && activePlatform) {
+      const platformData = market.platformMarkets.find(pm => pm.platform === activePlatform);
+      if (platformData) {
+        return {
+          eventTitle: platformData.eventTitle,
+          outcomes: platformData.outcomes,
+          totalVolume24h: platformData.totalVolume24h,
+          totalVolumeTotal: platformData.totalVolumeTotal,
+          platform: platformData.platform,
+        };
+      }
+    }
+    
+    // Default: use the main market outcomes (filter by platform if specified)
+    if (activePlatform) {
+      const filteredOutcomes = market.outcomes.filter(o => o.platform === activePlatform);
+      if (filteredOutcomes.length > 0) {
+        return {
+          eventTitle: market.eventTitle,
+          outcomes: filteredOutcomes,
+          totalVolume24h: market.totalVolume24h,
+          totalVolumeTotal: market.totalVolumeTotal,
+          platform: activePlatform,
+        };
+      }
+    }
+    
+    // Fallback: use all outcomes
+    return {
+      eventTitle: market.eventTitle,
+      outcomes: market.outcomes,
+      totalVolume24h: market.totalVolume24h,
+      totalVolumeTotal: market.totalVolumeTotal,
+      platform: market.platforms[0] || 'polymarket',
+    };
+  }, [market, activePlatform]);
   
   // Toggle outcome visibility
   const toggleOutcome = useCallback((outcomeTitle: string) => {
@@ -73,8 +116,8 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
   }, []);
   
   // Fetch historical price data for all outcomes
-  const fetchPriceHistory = useCallback(async (market: GroupedMarket, tf: Timeframe) => {
-    const outcomes = market.outcomes.slice(0, 6);
+  const fetchPriceHistory = useCallback(async (outcomes: GroupedMarket['outcomes'], tf: Timeframe) => {
+    const displayOutcomes = outcomes.slice(0, 6);
     const historyData: PriceHistoryData = {};
     
     setIsLoading(true);
@@ -82,7 +125,7 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
     
     try {
       // Fetch history for each outcome that has a clobTokenId
-      const fetchPromises = outcomes.map(async (outcome) => {
+      const fetchPromises = displayOutcomes.map(async (outcome) => {
         const tokenId = outcome.clobTokenIds?.[0];
         if (!tokenId) {
           console.log(`No token ID for outcome: ${outcome.title}`);
@@ -119,12 +162,12 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
     }
   }, []);
   
-  // Fetch data when market or timeframe changes
+  // Fetch data when market, platform, or timeframe changes
   useEffect(() => {
-    if (market) {
-      fetchPriceHistory(market, timeframe);
+    if (platformMarketData) {
+      fetchPriceHistory(platformMarketData.outcomes, timeframe);
     }
-  }, [market, timeframe, fetchPriceHistory]);
+  }, [platformMarketData, timeframe, fetchPriceHistory]);
   
   // Reset hidden outcomes when market changes
   useEffect(() => {
@@ -133,9 +176,9 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
   
   // Generate chart data from real or simulated data
   const { chartData, maxY } = useMemo(() => {
-    if (!market) return { chartData: [], maxY: 100 };
+    if (!market || !platformMarketData) return { chartData: [], maxY: 100 };
     
-    const outcomes = market.outcomes.slice(0, 6);
+    const outcomes = platformMarketData.outcomes.slice(0, 6);
     
     // Check if we have real data for at least one outcome
     const hasRealData = outcomes.some(o => priceHistory[o.title]?.length > 0);
@@ -143,10 +186,15 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
     if (hasRealData) {
       return generateChartFromRealData(outcomes, priceHistory, timeframe);
     } else {
-      // Fallback to simulated data
-      return generateSimulatedChartData(market, timeframe);
+      // Fallback to simulated data - create a pseudo market with the filtered outcomes
+      const pseudoMarket = {
+        ...market,
+        outcomes: platformMarketData.outcomes,
+        eventTitle: platformMarketData.eventTitle,
+      };
+      return generateSimulatedChartData(pseudoMarket, timeframe);
     }
-  }, [market, priceHistory, timeframe]);
+  }, [market, platformMarketData, priceHistory, timeframe]);
 
   if (!market) {
     return (
@@ -161,10 +209,10 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
     );
   }
 
-  // Top 6 outcomes for chart and legend
-  const chartOutcomes = market.outcomes.slice(0, 6);
-  // ALL outcomes for the table below
-  const allOutcomes = market.outcomes;
+  // Top 6 outcomes for chart and legend (from active platform)
+  const chartOutcomes = platformMarketData?.outcomes.slice(0, 6) || [];
+  // ALL outcomes for the table below (from active platform)
+  const allOutcomes = platformMarketData?.outcomes || [];
   
   // Filter outcomes for chart based on visibility
   const visibleOutcomes = chartOutcomes.filter(o => !hiddenOutcomes.has(o.title));
@@ -177,13 +225,31 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
 
   // Helper to get volume based on selected timeframe
   const getMarketVolume = () => {
+    const vol = platformMarketData || market;
     switch (volumeTimeframe) {
-      case 'total': return market.totalVolumeTotal || market.totalVolume24h;
-      case '1mo': return market.totalVolume1mo || 0;
-      case '1wk': return market.totalVolume1wk || 0;
-      case '24h': return market.totalVolume24h;
-      default: return market.totalVolumeTotal || market.totalVolume24h;
+      case 'total': return vol?.totalVolumeTotal || vol?.totalVolume24h || 0;
+      case '1mo': return market?.totalVolume1mo || 0;
+      case '1wk': return market?.totalVolume1wk || 0;
+      case '24h': return vol?.totalVolume24h || 0;
+      default: return vol?.totalVolumeTotal || vol?.totalVolume24h || 0;
     }
+  };
+  
+  // Platform badge colors
+  const platformColors: Record<MarketPlatform, string> = {
+    polymarket: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+    kalshi: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+    predictit: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+    metaculus: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+    manifold: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
+  };
+  
+  const platformLabels: Record<MarketPlatform, string> = {
+    polymarket: 'Polymarket',
+    kalshi: 'Kalshi',
+    predictit: 'PredictIt',
+    metaculus: 'Metaculus',
+    manifold: 'Manifold',
   };
 
   const getOutcomeVolume = (outcome: typeof allOutcomes[0]) => {
@@ -196,12 +262,25 @@ export function PriceDiscovery({ market }: PriceDiscoveryProps) {
     }
   };
 
+  const displayTitle = platformMarketData?.eventTitle || market.eventTitle;
+  const displayPlatform = platformMarketData?.platform || activePlatform || market.platforms[0];
+
   return (
     <div className="h-full flex flex-col">
       {/* Market Header */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex-1 min-w-0">
-          <h2 className="text-lg font-semibold truncate pr-4">{market.eventTitle}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold truncate pr-4">{displayTitle}</h2>
+            {displayPlatform && (
+              <span className={cn(
+                'shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border',
+                platformColors[displayPlatform]
+              )}>
+                {platformLabels[displayPlatform]}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
             <span className="flex items-center gap-1">
               <Calendar className="h-3 w-3" />

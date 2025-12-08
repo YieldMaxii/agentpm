@@ -8,7 +8,8 @@ import {
   AlphaSignal,
   AgentConfig,
   DataSource,
-  AgentTag
+  AgentTag,
+  MarketPlatform
 } from '@/lib/types';
 
 // Filter types
@@ -19,6 +20,8 @@ export interface MarketFilters {
   showResolved: boolean;
   category: CategorySlug;
   sortBy: SortOption;
+  selectedPlatforms: MarketPlatform[]; // Empty array = all platforms
+  crossPlatformOnly: boolean; // Only show markets on multiple platforms
 }
 
 interface AgentStore {
@@ -29,13 +32,15 @@ interface AgentStore {
   activeMarket: NormalizedMarket | null;
   activeGroupedMarket: GroupedMarket | null;
   activeOutcomeId: string | null;
+  activePlatform: MarketPlatform | null; // Which platform's data to show in chart
   isSearching: boolean;
   searchQuery: string;
   filters: MarketFilters;
   setMarkets: (markets: NormalizedMarket[]) => void;
   setGroupedMarkets: (markets: GroupedMarket[]) => void;
   setActiveMarket: (market: NormalizedMarket | null) => void;
-  setActiveGroupedMarket: (event: GroupedMarket) => void;
+  setActiveGroupedMarket: (event: GroupedMarket, platform?: MarketPlatform) => void;
+  setActivePlatform: (platform: MarketPlatform) => void;
   setSearchQuery: (query: string) => void;
   setFilters: (filters: MarketFilters) => void;
   searchMarkets: (query: string) => Promise<void>;
@@ -93,6 +98,217 @@ function filterResolved(markets: GroupedMarket[], showResolved: boolean): Groupe
   return markets.filter(market => !market.resolved);
 }
 
+// Stop words for matching
+const STOP_WORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'be', 'will',
+  'what', 'which', 'who', 'when', 'where', 'why', 'how', 'win', 'winner',
+  'champion', 'championship', 'next', 'any'
+]);
+
+// Synonym mappings
+const SYNONYMS: Record<string, string[]> = {
+  'super bowl': ['pro football championship', 'nfl championship'],
+  'world series': ['mlb championship', 'baseball championship'],
+  'nba finals': ['nba championship', 'basketball championship'],
+  'president': ['presidential', 'potus'],
+  'presidential': ['president', 'potus'],
+  'nominee': ['nomination', 'nominate'],
+  'democratic': ['democrat', 'dem'],
+  'republican': ['gop', 'rep'],
+  'fed': ['federal reserve', 'fomc'],
+  'bitcoin': ['btc'],
+  'ethereum': ['eth'],
+};
+
+// Helper function to normalize titles for matching
+function normalizeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Calculate title similarity with synonym support
+function calculateTitleSimilarity(title1: string, title2: string): number {
+  const norm1 = normalizeTitle(title1);
+  const norm2 = normalizeTitle(title2);
+  
+  if (norm1 === norm2) return 1;
+  
+  // Extract years - if both have years, they must match
+  const years1: string[] = title1.match(/\b(19|20)\d{2}\b/g) || [];
+  const years2: string[] = title2.match(/\b(19|20)\d{2}\b/g) || [];
+  if (years1.length > 0 && years2.length > 0) {
+    if (!years1.some(y => years2.includes(y))) return 0;
+  }
+  
+  // Get meaningful words
+  const words1 = norm1.split(' ').filter(w => w.length > 2 && !STOP_WORDS.has(w));
+  const words2 = norm2.split(' ').filter(w => w.length > 2 && !STOP_WORDS.has(w));
+  
+  if (words1.length === 0 || words2.length === 0) return 0;
+  
+  // Expand with synonyms
+  const expanded1 = new Set(words1.flatMap(w => {
+    const syns = [w];
+    for (const [key, vals] of Object.entries(SYNONYMS)) {
+      if (key.includes(w) || vals.some(v => v.includes(w))) {
+        syns.push(key, ...vals);
+      }
+    }
+    return syns;
+  }));
+  
+  const expanded2 = new Set(words2.flatMap(w => {
+    const syns = [w];
+    for (const [key, vals] of Object.entries(SYNONYMS)) {
+      if (key.includes(w) || vals.some(v => v.includes(w))) {
+        syns.push(key, ...vals);
+      }
+    }
+    return syns;
+  }));
+  
+  const intersection = Array.from(expanded1).filter(x => expanded2.has(x));
+  const union = new Set([...Array.from(expanded1), ...Array.from(expanded2)]);
+  
+  return intersection.length / union.size;
+}
+
+// Helper function to filter by platform(s)
+function filterByPlatform(
+  markets: GroupedMarket[], 
+  selectedPlatforms: MarketPlatform[], 
+  crossPlatformOnly: boolean
+): GroupedMarket[] {
+  // If no platforms selected and not cross-platform only, show all
+  if (selectedPlatforms.length === 0 && !crossPlatformOnly) {
+    return markets;
+  }
+  
+  // If crossPlatformOnly, group matching markets together
+  if (crossPlatformOnly) {
+    return groupCrossPlatformMarkets(markets, selectedPlatforms);
+  }
+  
+  // Regular platform filter
+  return markets.filter(market => {
+    return selectedPlatforms.length === 0 || 
+      market.platforms?.some(p => selectedPlatforms.includes(p));
+  });
+}
+
+// Group cross-platform markets together using title similarity
+function groupCrossPlatformMarkets(
+  markets: GroupedMarket[],
+  selectedPlatforms: MarketPlatform[]
+): GroupedMarket[] {
+  // Filter to only markets with crossPlatformOdds
+  const crossPlatformMarkets = markets.filter(m => {
+    if (!m.crossPlatformOdds) return false;
+    const platformsWithOdds = Object.entries(m.crossPlatformOdds)
+      .filter(([, odds]) => odds !== undefined)
+      .map(([p]) => p as MarketPlatform);
+    
+    if (selectedPlatforms.length >= 2) {
+      return platformsWithOdds.filter(p => selectedPlatforms.includes(p)).length >= 2;
+    }
+    return platformsWithOdds.length >= 2;
+  });
+  
+  // Find matching pairs using title similarity
+  const grouped: GroupedMarket[] = [];
+  const processedIds = new Set<string>();
+  
+  // Group markets by platform
+  const byPlatform = new Map<MarketPlatform, GroupedMarket[]>();
+  for (const market of crossPlatformMarkets) {
+    const platform = market.platforms[0];
+    if (!byPlatform.has(platform)) {
+      byPlatform.set(platform, []);
+    }
+    byPlatform.get(platform)!.push(market);
+  }
+  
+  const platforms = Array.from(byPlatform.keys());
+  if (platforms.length < 2) {
+    return crossPlatformMarkets; // Not enough platforms to group
+  }
+  
+  // Use first platform as base and find matches from other platforms
+  const basePlatform = platforms[0];
+  const baseMarkets = byPlatform.get(basePlatform) || [];
+  
+  for (const baseMarket of baseMarkets) {
+    const baseId = `${baseMarket.platforms[0]}:${baseMarket.eventId}`;
+    if (processedIds.has(baseId)) continue;
+    
+    const matchingMarkets: GroupedMarket[] = [baseMarket];
+    processedIds.add(baseId);
+    
+    // Find matches from other platforms
+    for (const otherPlatform of platforms.slice(1)) {
+      const otherMarkets = byPlatform.get(otherPlatform) || [];
+      
+      let bestMatch: GroupedMarket | null = null;
+      let bestScore = 0;
+      
+      for (const otherMarket of otherMarkets) {
+        const otherId = `${otherMarket.platforms[0]}:${otherMarket.eventId}`;
+        if (processedIds.has(otherId)) continue;
+        
+        const similarity = calculateTitleSimilarity(baseMarket.eventTitle, otherMarket.eventTitle);
+        if (similarity > bestScore && similarity >= 0.6) {
+          bestScore = similarity;
+          bestMatch = otherMarket;
+        }
+      }
+      
+      if (bestMatch) {
+        matchingMarkets.push(bestMatch);
+        processedIds.add(`${bestMatch.platforms[0]}:${bestMatch.eventId}`);
+      }
+    }
+    
+    // Only include if we found matches from multiple platforms
+    if (matchingMarkets.length >= 2) {
+      // Use highest volume market as base
+      const bestMarket = matchingMarkets.reduce((best, m) => 
+        m.totalVolume24h > best.totalVolume24h ? m : best
+      );
+      
+      // Create platform-specific data
+      const platformMarkets = matchingMarkets.map(m => ({
+        platform: m.platforms[0],
+        eventId: m.eventId,
+        eventTitle: m.eventTitle,
+        outcomes: m.outcomes,
+        totalVolume24h: m.totalVolume24h,
+        totalVolumeTotal: m.totalVolumeTotal,
+      }));
+      
+      // Combine platforms
+      const allPlatforms = Array.from(new Set(matchingMarkets.flatMap(m => m.platforms))) as MarketPlatform[];
+      
+      grouped.push({
+        ...bestMarket,
+        platforms: allPlatforms,
+        platformMarkets,
+        totalVolume24h: matchingMarkets.reduce((sum, m) => sum + m.totalVolume24h, 0),
+        totalVolumeTotal: matchingMarkets.reduce((sum, m) => sum + m.totalVolumeTotal, 0),
+        totalLiquidity: matchingMarkets.reduce((sum, m) => sum + m.totalLiquidity, 0),
+      });
+    }
+  }
+  
+  // Sort by volume
+  grouped.sort((a, b) => b.totalVolume24h - a.totalVolume24h);
+  
+  return grouped;
+}
+
 // Helper function to sort markets
 function sortMarkets(markets: GroupedMarket[], sortBy: SortOption): GroupedMarket[] {
   const sorted = [...markets];
@@ -139,22 +355,33 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   activeMarket: null,
   activeGroupedMarket: null,
   activeOutcomeId: null,
+  activePlatform: null,
   isSearching: false,
   searchQuery: '',
   filters: {
     showResolved: false,
     category: 'all' as CategorySlug,
     sortBy: 'trending' as SortOption,
+    selectedPlatforms: [],
+    crossPlatformOnly: false,
   },
   
   setMarkets: (markets) => set({ markets }),
   setGroupedMarkets: (groupedMarkets) => set({ groupedMarkets }),
   setActiveMarket: (market) => set({ activeMarket: market }),
-  setActiveGroupedMarket: (event: GroupedMarket) => {
+  setActiveGroupedMarket: (event: GroupedMarket, platform?: MarketPlatform) => {
     // Set the grouped market as active - used for multi-outcome chart view
+    // Get odds from each platform's first outcome
+    const polyOutcome = event.outcomes.find(o => o.platform === 'polymarket');
+    const kalshiOutcome = event.outcomes.find(o => o.platform === 'kalshi');
+    
+    // Use provided platform or default to first available
+    const selectedPlatform = platform || event.platforms?.[0] || 'polymarket';
+    
     set({ 
       activeGroupedMarket: event,
       activeOutcomeId: null,
+      activePlatform: selectedPlatform,
       // Also set activeMarket for backward compatibility (use event info)
       activeMarket: {
         id: event.eventId,
@@ -162,7 +389,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         slug: event.slug,
         description: event.description,
         normalizedOdds: {
-          polymarket: event.outcomes[0]?.odds || 0.5,
+          polymarket: polyOutcome?.odds || event.crossPlatformOdds?.polymarket,
+          kalshi: kalshiOutcome?.odds || event.crossPlatformOdds?.kalshi,
         },
         volume24h: event.totalVolume24h,
         liquidity: event.totalLiquidity,
@@ -171,8 +399,39 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         hasArbitrage: event.hasArbitrage,
         eventId: event.eventId,
         eventTitle: event.eventTitle,
+        platform: selectedPlatform,
       }
     });
+  },
+  setActivePlatform: (platform: MarketPlatform) => {
+    const { activeGroupedMarket } = get();
+    if (activeGroupedMarket) {
+      // Update the active platform and refresh the activeMarket
+      const polyOutcome = activeGroupedMarket.outcomes.find(o => o.platform === 'polymarket');
+      const kalshiOutcome = activeGroupedMarket.outcomes.find(o => o.platform === 'kalshi');
+      
+      set({
+        activePlatform: platform,
+        activeMarket: {
+          id: activeGroupedMarket.eventId,
+          title: activeGroupedMarket.eventTitle,
+          slug: activeGroupedMarket.slug,
+          description: activeGroupedMarket.description,
+          normalizedOdds: {
+            polymarket: polyOutcome?.odds || activeGroupedMarket.crossPlatformOdds?.polymarket,
+            kalshi: kalshiOutcome?.odds || activeGroupedMarket.crossPlatformOdds?.kalshi,
+          },
+          volume24h: activeGroupedMarket.totalVolume24h,
+          liquidity: activeGroupedMarket.totalLiquidity,
+          endDate: activeGroupedMarket.endDate,
+          category: activeGroupedMarket.category,
+          hasArbitrage: activeGroupedMarket.hasArbitrage,
+          eventId: activeGroupedMarket.eventId,
+          eventTitle: activeGroupedMarket.eventTitle,
+          platform: platform,
+        }
+      });
+    }
   },
   setSearchQuery: (query) => set({ searchQuery: query }),
   
@@ -183,6 +442,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     let filtered = allGroupedMarkets;
     filtered = filterResolved(filtered, filters.showResolved);
     filtered = filterByCategory(filtered, filters.category);
+    filtered = filterByPlatform(filtered, filters.selectedPlatforms || [], filters.crossPlatformOnly || false);
     filtered = sortMarkets(filtered, filters.sortBy);
     
     set({ 
@@ -234,6 +494,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       // Apply other filters and sorting
       filtered = filterResolved(filtered, filters.showResolved);
       filtered = filterByCategory(filtered, filters.category);
+      filtered = filterByPlatform(filtered, filters.selectedPlatforms || [], filters.crossPlatformOnly || false);
       filtered = sortMarkets(filtered, filters.sortBy);
       
       set({ 

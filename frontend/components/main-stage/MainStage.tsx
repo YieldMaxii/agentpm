@@ -13,7 +13,7 @@ interface MainStageProps {
 }
 
 export function MainStage({ isCockpitCollapsed = false, onCockpitCollapseToggle }: MainStageProps) {
-  const { activeGroupedMarket, alphaSignal, agentState } = useAgentStore();
+  const { activeGroupedMarket, activePlatform, alphaSignal, agentState } = useAgentStore();
 
   return (
     <div className="h-full flex flex-col relative">
@@ -22,7 +22,7 @@ export function MainStage({ isCockpitCollapsed = false, onCockpitCollapseToggle 
         "min-h-0 border-b border-border p-4 transition-all duration-300 ease-in-out",
         isCockpitCollapsed ? "flex-1" : "flex-[1]"
       )}>
-        <PriceDiscovery market={activeGroupedMarket} />
+        <PriceDiscovery market={activeGroupedMarket} activePlatform={activePlatform} />
       </section>
 
       {/* Mode B: Agent Cockpit (Bottom - collapsible) */}
