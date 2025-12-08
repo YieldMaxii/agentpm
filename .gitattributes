@@ -1,0 +1,12 @@
+# Exclude AgentPM.json from language statistics
+# It's a LangFlow configuration file with embedded Python code
+AgentPM.json linguist-vendored
+
+# Ensure TypeScript/JavaScript files are properly recognized
+frontend/**/*.ts linguist-detectable=true
+frontend/**/*.tsx linguist-detectable=true
+frontend/**/*.js linguist-detectable=true
+frontend/**/*.jsx linguist-detectable=true
+
+# Mark JSON config files as JSON (not Python)
+*.json linguist-language=JSON
