@@ -1,0 +1,375 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Terminal Dark Theme - Bloomberg/Institutional Style */
+    --background: 220 20% 4%;
+    --foreground: 210 20% 90%;
+    
+    --card: 220 20% 6%;
+    --card-foreground: 210 20% 90%;
+    
+    --popover: 220 20% 8%;
+    --popover-foreground: 210 20% 90%;
+    
+    --primary: 142 76% 46%;
+    --primary-foreground: 220 20% 4%;
+    
+    --secondary: 220 15% 14%;
+    --secondary-foreground: 210 20% 90%;
+    
+    --muted: 220 15% 12%;
+    --muted-foreground: 220 10% 50%;
+    
+    --accent: 38 92% 50%;
+    --accent-foreground: 220 20% 4%;
+    
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 20% 98%;
+    
+    --border: 220 15% 16%;
+    --input: 220 15% 14%;
+    --ring: 142 76% 46%;
+    
+    /* Agent Colors */
+    --planner: 38 92% 50%;
+    --scout: 187 92% 50%;
+    --researcher: 142 76% 46%;
+    --detector: 280 67% 60%;
+    
+    /* Signal Colors */
+    --signal-buy: 142 76% 46%;
+    --signal-hold: 220 10% 50%;
+    --signal-sell: 0 72% 51%;
+    
+    /* Chart Colors */
+    --chart-1: 142 76% 46%;
+    --chart-2: 38 92% 50%;
+    --chart-3: 187 92% 50%;
+    --chart-4: 280 67% 60%;
+    --chart-5: 0 72% 51%;
+    
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  html {
+    @apply h-full overflow-hidden;
+  }
+  
+  body {
+    @apply bg-background text-foreground h-full overflow-hidden antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  
+  /* Custom scrollbar for terminal aesthetic */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+  
+  /* Terminal text glow effects */
+  .text-glow-green {
+    text-shadow: 0 0 10px hsl(var(--primary) / 0.5);
+  }
+  
+  .text-glow-amber {
+    text-shadow: 0 0 10px hsl(var(--accent) / 0.5);
+  }
+  
+  .text-glow-cyan {
+    text-shadow: 0 0 10px hsl(187 92% 50% / 0.5);
+  }
+  
+  /* Button glow for VERIFY button */
+  .btn-glow {
+    box-shadow: 0 0 20px hsl(var(--primary) / 0.4), 
+                0 0 40px hsl(var(--primary) / 0.2);
+    transition: box-shadow 0.3s ease;
+  }
+  
+  .btn-glow:hover {
+    box-shadow: 0 0 30px hsl(var(--primary) / 0.6), 
+                0 0 60px hsl(var(--primary) / 0.3);
+  }
+  
+  /* Scanner row flash animation for price changes */
+  @keyframes flash-green {
+    0% { background-color: hsl(142 76% 46% / 0.3); }
+    100% { background-color: transparent; }
+  }
+  
+  @keyframes flash-red {
+    0% { background-color: hsl(0 72% 51% / 0.3); }
+    100% { background-color: transparent; }
+  }
+  
+  .flash-up {
+    animation: flash-green 0.5s ease-out;
+  }
+  
+  .flash-down {
+    animation: flash-red 0.5s ease-out;
+  }
+  
+  /* Pulse animation for live indicators */
+  @keyframes pulse-live {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  
+  .pulse-live {
+    animation: pulse-live 2s ease-in-out infinite;
+  }
+  
+  /* Typing cursor for glass box */
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+  
+  .cursor-blink::after {
+    content: '▋';
+    animation: blink 1s step-end infinite;
+    @apply text-primary ml-0.5;
+  }
+  
+  /* Grid pattern background */
+  .bg-grid {
+    background-image: 
+      linear-gradient(hsl(var(--border) / 0.3) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--border) / 0.3) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+}
+
+/* React Grid Layout Styles */
+
+/* Container - fixed canvas area with no overflow */
+.grid-layout-container {
+  position: relative;
+  overflow: hidden !important;
+  height: 100%;
+  width: 100%;
+  max-height: 100%;
+}
+
+/* Ensure react-grid-layout stays within container bounds and uses full width */
+.grid-layout-container .react-grid-layout {
+  height: 100% !important;
+  width: 100% !important;
+  min-height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Prevent any item from extending beyond canvas */
+.grid-layout-container .react-grid-item {
+  overflow: hidden;
+}
+
+/* Base layout */
+.react-grid-layout {
+  position: relative;
+  transition: height 150ms ease;
+}
+
+/* Grid items */
+.react-grid-item {
+  transition: all 150ms ease;
+  transition-property: left, top, width, height;
+}
+
+.react-grid-item.cssTransforms {
+  transition-property: transform, width, height;
+}
+
+.react-grid-item.resizing {
+  z-index: 10;
+  will-change: width, height;
+  transition: none !important;
+}
+
+.react-grid-item.resizing .grid-panel {
+  border-color: hsl(var(--foreground) / 0.3);
+}
+
+.react-grid-item.react-draggable-dragging {
+  transition: none !important;
+  z-index: 100;
+  will-change: transform;
+}
+
+.react-grid-item.react-draggable-dragging .grid-panel {
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+  opacity: 0.95;
+  border-color: hsl(var(--foreground) / 0.3);
+}
+
+.react-grid-item.dropping {
+  visibility: hidden;
+}
+
+/* Placeholder - shows where panel will land */
+.react-grid-item.react-grid-placeholder {
+  background: hsl(var(--foreground) / 0.08) !important;
+  border: 2px dashed hsl(var(--foreground) / 0.25) !important;
+  border-radius: 0.5rem;
+  opacity: 1;
+  transition-duration: 150ms;
+  z-index: 2;
+  user-select: none;
+}
+
+/* Edge resize handles - use ::before to extend clickable area */
+.react-grid-item > .react-resizable-handle {
+  position: absolute;
+  z-index: 20;
+  background: transparent;
+}
+
+/* Remove default ::after styling */
+.react-grid-item > .react-resizable-handle::after {
+  display: none !important;
+}
+
+/* Base for all edge handles - use ::before to extend hit area */
+.react-grid-item > .react-resizable-handle::before {
+  content: "";
+  position: absolute;
+  background: transparent;
+}
+
+/* North handle - extend across full top edge */
+.react-resizable-handle-n {
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+  height: 8px !important;
+  cursor: ns-resize !important;
+  transform: none !important;
+}
+
+/* South handle - extend across full bottom edge */
+.react-resizable-handle-s {
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+  height: 8px !important;
+  cursor: ns-resize !important;
+  transform: none !important;
+}
+
+/* West handle - extend across full left edge */
+.react-resizable-handle-w {
+  left: 0 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 8px !important;
+  height: 100% !important;
+  cursor: ew-resize !important;
+  transform: none !important;
+}
+
+/* East handle - extend across full right edge */
+.react-resizable-handle-e {
+  right: 0 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 8px !important;
+  height: 100% !important;
+  cursor: ew-resize !important;
+  transform: none !important;
+}
+
+/* Corner handles */
+.react-resizable-handle-nw {
+  top: 0 !important;
+  left: 0 !important;
+  width: 12px !important;
+  height: 12px !important;
+  cursor: nw-resize !important;
+  transform: none !important;
+  z-index: 21;
+}
+
+.react-resizable-handle-ne {
+  top: 0 !important;
+  right: 0 !important;
+  left: auto !important;
+  width: 12px !important;
+  height: 12px !important;
+  cursor: ne-resize !important;
+  transform: none !important;
+  z-index: 21;
+}
+
+.react-resizable-handle-sw {
+  bottom: 0 !important;
+  left: 0 !important;
+  top: auto !important;
+  width: 12px !important;
+  height: 12px !important;
+  cursor: sw-resize !important;
+  transform: none !important;
+  z-index: 21;
+}
+
+.react-resizable-handle-se {
+  bottom: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  left: auto !important;
+  width: 12px !important;
+  height: 12px !important;
+  cursor: se-resize !important;
+  transform: none !important;
+  z-index: 21;
+}
+
+/* Drag handle cursor */
+.drag-handle {
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* Panel transitions during resize */
+.grid-panel {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}

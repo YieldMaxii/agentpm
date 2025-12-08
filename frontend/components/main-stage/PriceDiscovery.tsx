@@ -1,0 +1,715 @@
+'use client';
+
+import { GroupedMarket, VolumeTimeframe, MarketPlatform } from '@/lib/types';
+import { AreaChart, Card } from '@tremor/react';
+import { Activity, Calendar, DollarSign, Droplets, Loader2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+
+interface PriceDiscoveryProps {
+  market: GroupedMarket | null;
+  activePlatform?: MarketPlatform | null;
+}
+
+// Timeframe options for the chart
+type Timeframe = '1D' | '1W' | '1M' | 'ALL';
+
+const TIMEFRAMES: { value: Timeframe; label: string }[] = [
+  { value: '1D', label: '1D' },
+  { value: '1W', label: '1W' },
+  { value: '1M', label: '1M' },
+  { value: 'ALL', label: 'All' },
+];
+
+// Volume timeframe options
+const VOLUME_TIMEFRAMES: { value: VolumeTimeframe; label: string }[] = [
+  { value: 'total', label: 'Total' },
+  { value: '1mo', label: '1M' },
+  { value: '1wk', label: '1W' },
+  { value: '24h', label: '24H' },
+];
+
+// Vibrant color palette matching Polymarket style
+const OUTCOME_COLORS = [
+  '#22c55e', // green (leading option)
+  '#3b82f6', // blue
+  '#f59e0b', // amber/orange
+  '#ec4899', // pink
+  '#8b5cf6', // violet
+  '#06b6d4', // cyan
+] as const;
+
+const TREMOR_COLORS = ['green', 'blue', 'amber', 'pink', 'violet', 'cyan'] as const;
+
+interface PriceHistoryPoint {
+  timestamp: number;
+  price: number;
+  date: string;
+}
+
+interface PriceHistoryData {
+  [outcomeTitle: string]: PriceHistoryPoint[];
+}
+
+export function PriceDiscovery({ market, activePlatform }: PriceDiscoveryProps) {
+  const [timeframe, setTimeframe] = useState<Timeframe>('1D');
+  const [volumeTimeframe, setVolumeTimeframe] = useState<VolumeTimeframe>('total');
+  const [priceHistory, setPriceHistory] = useState<PriceHistoryData>({});
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Track which outcomes are visible on the chart (all visible by default)
+  const [hiddenOutcomes, setHiddenOutcomes] = useState<Set<string>>(new Set());
+  
+  // Get the relevant platform market data
+  const platformMarketData = useMemo(() => {
+    if (!market) return null;
+    
+    // If this market has platformMarkets (cross-platform), use the selected platform's data
+    if (market.platformMarkets && market.platformMarkets.length > 0 && activePlatform) {
+      const platformData = market.platformMarkets.find(pm => pm.platform === activePlatform);
+      if (platformData) {
+        return {
+          eventTitle: platformData.eventTitle,
+          outcomes: platformData.outcomes,
+          totalVolume24h: platformData.totalVolume24h,
+          totalVolumeTotal: platformData.totalVolumeTotal,
+          platform: platformData.platform,
+        };
+      }
+    }
+    
+    // Default: use the main market outcomes (filter by platform if specified)
+    if (activePlatform) {
+      const filteredOutcomes = market.outcomes.filter(o => o.platform === activePlatform);
+      if (filteredOutcomes.length > 0) {
+        return {
+          eventTitle: market.eventTitle,
+          outcomes: filteredOutcomes,
+          totalVolume24h: market.totalVolume24h,
+          totalVolumeTotal: market.totalVolumeTotal,
+          platform: activePlatform,
+        };
+      }
+    }
+    
+    // Fallback: use all outcomes
+    return {
+      eventTitle: market.eventTitle,
+      outcomes: market.outcomes,
+      totalVolume24h: market.totalVolume24h,
+      totalVolumeTotal: market.totalVolumeTotal,
+      platform: market.platforms[0] || 'polymarket',
+    };
+  }, [market, activePlatform]);
+  
+  // Toggle outcome visibility
+  const toggleOutcome = useCallback((outcomeTitle: string) => {
+    setHiddenOutcomes(prev => {
+      const next = new Set(prev);
+      if (next.has(outcomeTitle)) {
+        next.delete(outcomeTitle);
+      } else {
+        next.add(outcomeTitle);
+      }
+      return next;
+    });
+  }, []);
+  
+  // Fetch historical price data for all outcomes
+  const fetchPriceHistory = useCallback(async (outcomes: GroupedMarket['outcomes'], tf: Timeframe) => {
+    const displayOutcomes = outcomes.slice(0, 6);
+    const historyData: PriceHistoryData = {};
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      // Fetch history for each outcome that has a clobTokenId
+      const fetchPromises = displayOutcomes.map(async (outcome) => {
+        const tokenId = outcome.clobTokenIds?.[0];
+        if (!tokenId) {
+          console.log(`No token ID for outcome: ${outcome.title}`);
+          return { title: outcome.title, history: [] };
+        }
+        
+        try {
+          const response = await fetch(`/api/markets/history?tokenId=${encodeURIComponent(tokenId)}&timeframe=${tf}`);
+          if (!response.ok) {
+            console.error(`Failed to fetch history for ${outcome.title}`);
+            return { title: outcome.title, history: [] };
+          }
+          
+          const data = await response.json();
+          return { title: outcome.title, history: data.history || [] };
+        } catch (err) {
+          console.error(`Error fetching history for ${outcome.title}:`, err);
+          return { title: outcome.title, history: [] };
+        }
+      });
+      
+      const results = await Promise.all(fetchPromises);
+      
+      results.forEach(({ title, history }) => {
+        historyData[title] = history;
+      });
+      
+      setPriceHistory(historyData);
+    } catch (err) {
+      console.error('Error fetching price history:', err);
+      setError('Failed to load price history');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+  
+  // Fetch data when market, platform, or timeframe changes
+  useEffect(() => {
+    if (platformMarketData) {
+      fetchPriceHistory(platformMarketData.outcomes, timeframe);
+    }
+  }, [platformMarketData, timeframe, fetchPriceHistory]);
+  
+  // Reset hidden outcomes when market changes
+  useEffect(() => {
+    setHiddenOutcomes(new Set());
+  }, [market?.eventId]);
+  
+  // Generate chart data from real or simulated data
+  const { chartData, maxY } = useMemo(() => {
+    if (!market || !platformMarketData) return { chartData: [], maxY: 100 };
+    
+    const outcomes = platformMarketData.outcomes.slice(0, 6);
+    
+    // Check if we have real data for at least one outcome
+    const hasRealData = outcomes.some(o => priceHistory[o.title]?.length > 0);
+    
+    if (hasRealData) {
+      return generateChartFromRealData(outcomes, priceHistory, timeframe);
+    } else {
+      // Fallback to simulated data - create a pseudo market with the filtered outcomes
+      const pseudoMarket = {
+        ...market,
+        outcomes: platformMarketData.outcomes,
+        eventTitle: platformMarketData.eventTitle,
+      };
+      return generateSimulatedChartData(pseudoMarket, timeframe);
+    }
+  }, [market, platformMarketData, priceHistory, timeframe]);
+
+  if (!market) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center">
+          <Activity className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground">
+            Select a market from the scanner to view odds
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Top 6 outcomes for chart and legend (from active platform)
+  const chartOutcomes = platformMarketData?.outcomes.slice(0, 6) || [];
+  // ALL outcomes for the table below (from active platform)
+  const allOutcomes = platformMarketData?.outcomes || [];
+  
+  // Filter outcomes for chart based on visibility
+  const visibleOutcomes = chartOutcomes.filter(o => !hiddenOutcomes.has(o.title));
+  const visibleOutcomeNames = visibleOutcomes.map(o => o.title);
+  
+  // Build colors array maintaining original indices for consistency
+  const visibleColors = chartOutcomes
+    .map((o, idx) => hiddenOutcomes.has(o.title) ? null : TREMOR_COLORS[idx])
+    .filter((c): c is typeof TREMOR_COLORS[number] => c !== null);
+
+  // Helper to get volume based on selected timeframe
+  const getMarketVolume = () => {
+    const vol = platformMarketData || market;
+    switch (volumeTimeframe) {
+      case 'total': return vol?.totalVolumeTotal || vol?.totalVolume24h || 0;
+      case '1mo': return market?.totalVolume1mo || 0;
+      case '1wk': return market?.totalVolume1wk || 0;
+      case '24h': return vol?.totalVolume24h || 0;
+      default: return vol?.totalVolumeTotal || vol?.totalVolume24h || 0;
+    }
+  };
+  
+  // Platform badge colors
+  const platformColors: Record<MarketPlatform, string> = {
+    polymarket: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+    kalshi: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+    predictit: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+    metaculus: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+    manifold: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
+  };
+  
+  const platformLabels: Record<MarketPlatform, string> = {
+    polymarket: 'Polymarket',
+    kalshi: 'Kalshi',
+    predictit: 'PredictIt',
+    metaculus: 'Metaculus',
+    manifold: 'Manifold',
+  };
+
+  const getOutcomeVolume = (outcome: typeof allOutcomes[0]) => {
+    switch (volumeTimeframe) {
+      case 'total': return outcome.volumeTotal || outcome.volume24h;
+      case '1mo': return outcome.volume1mo || 0;
+      case '1wk': return outcome.volume1wk || 0;
+      case '24h': return outcome.volume24h;
+      default: return outcome.volumeTotal || outcome.volume24h;
+    }
+  };
+
+  const displayTitle = platformMarketData?.eventTitle || market.eventTitle;
+  const displayPlatform = platformMarketData?.platform || activePlatform || market.platforms[0];
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Market Header */}
+      <div className="flex items-start justify-between mb-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold truncate pr-4">{displayTitle}</h2>
+            {displayPlatform && (
+              <span className={cn(
+                'shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border',
+                platformColors[displayPlatform]
+              )}>
+                {platformLabels[displayPlatform]}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Calendar className="h-3 w-3" />
+              {market.endDate ? new Date(market.endDate).toLocaleDateString() : 'N/A'}
+            </span>
+            <span className="flex items-center gap-1">
+              <DollarSign className="h-3 w-3" />
+              ${formatNumber(getMarketVolume())} Vol
+            </span>
+            <span className="flex items-center gap-1">
+              <Droplets className="h-3 w-3" />
+              ${formatNumber(market.totalLiquidity || 0)} Liq
+            </span>
+            {/* Volume Timeframe Toggle */}
+            <div className="flex items-center gap-0.5 bg-secondary/50 rounded-md p-0.5 ml-2">
+              {VOLUME_TIMEFRAMES.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setVolumeTimeframe(value)}
+                  className={cn(
+                    "px-1.5 py-0.5 rounded text-[10px] font-medium transition-all",
+                    volumeTimeframe === value
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Polymarket-style Legend & Timeframe Selector */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {chartOutcomes.map((outcome, idx) => {
+            const odds = outcome.odds * 100;
+            const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
+            const isHidden = hiddenOutcomes.has(outcome.title);
+            return (
+              <button
+                key={outcome.id}
+                onClick={() => toggleOutcome(outcome.title)}
+                className={cn(
+                  "flex items-center gap-1.5 px-1.5 py-0.5 rounded transition-all",
+                  "hover:bg-secondary/50 cursor-pointer",
+                  isHidden && "opacity-40"
+                )}
+                title={isHidden ? `Show ${outcome.title} on chart` : `Hide ${outcome.title} from chart`}
+              >
+                <span 
+                  className={cn(
+                    "w-2.5 h-2.5 rounded-full transition-all",
+                    isHidden && "ring-1 ring-muted-foreground"
+                  )}
+                  style={{ 
+                    backgroundColor: isHidden ? 'transparent' : OUTCOME_COLORS[idx],
+                    borderColor: OUTCOME_COLORS[idx],
+                  }}
+                />
+                <span className={cn(
+                  "text-xs transition-colors",
+                  isHidden ? "text-muted-foreground/50 line-through" : "text-muted-foreground"
+                )}>
+                  {outcome.title}
+                </span>
+                <span 
+                  className={cn(
+                    "text-xs font-semibold transition-colors",
+                    isHidden && "opacity-50"
+                  )} 
+                  style={{ color: OUTCOME_COLORS[idx] }}
+                >
+                  {displayOdds}%
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        
+        {/* Timeframe Selector */}
+        <div className="flex items-center gap-0.5 bg-secondary/50 rounded-md p-0.5">
+          {TIMEFRAMES.map((tf) => (
+            <button
+              key={tf.value}
+              onClick={() => setTimeframe(tf.value)}
+              className={cn(
+                'px-2 py-1 text-[10px] font-medium rounded transition-colors',
+                timeframe === tf.value
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
+              )}
+            >
+              {tf.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Multi-Outcome Chart */}
+      <Card className="flex-[2] min-h-0 bg-card/50 border-border p-2 relative">
+        {isLoading && (
+          <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10 rounded-lg">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </div>
+        )}
+        {error && (
+          <div className="absolute top-2 left-2 text-xs text-yellow-500 flex items-center gap-1">
+            <span>⚠️ Using simulated data</span>
+          </div>
+        )}
+        <div className="h-full">
+          <AreaChart
+            className="h-full"
+            data={chartData}
+            index="time"
+            categories={visibleOutcomeNames}
+            colors={visibleColors as unknown as string[]}
+            valueFormatter={(value) => `${value.toFixed(0)}%`}
+            showLegend={false}
+            showGridLines={true}
+            showAnimation={false}
+            curveType="monotone"
+            yAxisWidth={45}
+            minValue={0}
+            maxValue={Math.ceil(maxY / 10) * 10}
+            connectNulls={true}
+            customTooltip={({ payload, active, label }) => {
+              if (!active || !payload?.length) return null;
+              return (
+                <div className="bg-popover/95 backdrop-blur border border-border rounded-lg p-2.5 shadow-xl">
+                  <p className="text-xs text-muted-foreground mb-1.5 font-medium">{label}</p>
+                  {payload.map((item, idx) => {
+                    const itemData = item as { name?: string; value?: number; color?: string };
+                    return (
+                      <div key={itemData.name || idx} className="flex items-center justify-between gap-3 text-xs">
+                        <span className="flex items-center gap-1.5">
+                          <span 
+                            className="w-2 h-2 rounded-full" 
+                            style={{ backgroundColor: itemData.color }}
+                          />
+                          <span className="text-muted-foreground">{itemData.name}</span>
+                        </span>
+                        <span className="font-mono font-semibold">
+                          {typeof itemData.value === 'number' ? itemData.value.toFixed(1) : '—'}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            }}
+          />
+        </div>
+      </Card>
+
+      {/* Outcomes Table */}
+      <div className="flex-1 min-h-0 mt-2 overflow-auto">
+        <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 gap-y-0.5 text-xs">
+          {/* Header */}
+          <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide pb-1"></div>
+          <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide pb-1">Outcome</div>
+          <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide text-right pb-1">% Chance</div>
+          <div className="text-[10px] text-muted-foreground uppercase font-medium tracking-wide text-right pb-1">Volume</div>
+          
+          {/* Outcome rows - ALL outcomes shown, top 6 are clickable to toggle chart visibility */}
+          {allOutcomes.map((outcome, idx) => {
+            const odds = outcome.odds * 100;
+            const displayOdds = odds < 1 ? '<1' : odds.toFixed(0);
+            // Only first 6 outcomes are shown on chart
+            const isOnChart = idx < 6;
+            const isHidden = isOnChart && hiddenOutcomes.has(outcome.title);
+            // Get color - first 6 get vibrant colors, rest get a muted color
+            const outcomeColor = idx < 6 ? OUTCOME_COLORS[idx] : '#6b7280';
+            
+            return (
+              <div 
+                key={outcome.id} 
+                className={cn(
+                  "contents group",
+                  isOnChart && "cursor-pointer",
+                  isHidden && "opacity-40"
+                )}
+                onClick={isOnChart ? () => toggleOutcome(outcome.title) : undefined}
+                title={isOnChart ? (isHidden ? `Show ${outcome.title} on chart` : `Hide ${outcome.title} from chart`) : undefined}
+              >
+                <div className={cn(
+                  "flex items-center py-1.5 border-t border-border/30 group-first:border-t-0",
+                  isOnChart && "group-hover:bg-secondary/30"
+                )}>
+                  <span 
+                    className={cn(
+                      "w-2 h-2 rounded-full transition-all",
+                      isHidden && "ring-1 ring-muted-foreground"
+                    )}
+                    style={{ 
+                      backgroundColor: isHidden ? 'transparent' : outcomeColor,
+                    }}
+                  />
+                </div>
+                <div className={cn(
+                  "py-1.5 truncate border-t border-border/30 group-first:border-t-0 transition-colors",
+                  isOnChart && "group-hover:bg-secondary/30",
+                  isHidden ? "text-muted-foreground line-through" : "text-foreground"
+                )}>
+                  {outcome.title}
+                </div>
+                <div className={cn(
+                  'py-1.5 font-mono font-bold text-right tabular-nums text-sm border-t border-border/30 group-first:border-t-0 transition-colors',
+                  isOnChart && "group-hover:bg-secondary/30",
+                  isHidden ? 'text-muted-foreground' : odds >= 50 ? 'text-primary' : odds >= 20 ? 'text-foreground' : 'text-muted-foreground'
+                )}>
+                  {displayOdds}%
+                </div>
+                <div className={cn(
+                  "py-1.5 font-mono text-muted-foreground text-right tabular-nums border-t border-border/30 group-first:border-t-0 transition-colors",
+                  isOnChart && "group-hover:bg-secondary/30"
+                )}>
+                  ${formatNumber(getOutcomeVolume(outcome))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Timeframe formatting configuration
+const TIMEFRAME_FORMAT: Record<Timeframe, (date: Date) => string> = {
+  '1D': (date) => date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+  '1W': (date) => date.toLocaleDateString('en-US', { weekday: 'short', hour: 'numeric', hour12: true }),
+  '1M': (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+  'ALL': (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+};
+
+interface OutcomeInfo {
+  title: string;
+  odds: number;
+  clobTokenIds?: string[];
+}
+
+function generateChartFromRealData(
+  outcomes: OutcomeInfo[], 
+  priceHistory: PriceHistoryData,
+  timeframe: Timeframe
+): { chartData: Record<string, string | number>[]; maxY: number } {
+  
+  // Collect all unique timestamps across all outcomes
+  const allTimestamps = new Set<number>();
+  outcomes.forEach(outcome => {
+    const history = priceHistory[outcome.title] || [];
+    history.forEach(point => allTimestamps.add(point.timestamp));
+  });
+  
+  // Sort timestamps
+  const sortedTimestamps = Array.from(allTimestamps).sort((a, b) => a - b);
+  
+  if (sortedTimestamps.length === 0) {
+    // No real data, return empty
+    return { chartData: [], maxY: 100 };
+  }
+  
+  // Subsample if we have too many points (keep around 50-100 for performance)
+  let timestamps = sortedTimestamps;
+  if (sortedTimestamps.length > 100) {
+    const step = Math.floor(sortedTimestamps.length / 80);
+    timestamps = sortedTimestamps.filter((_, i) => i % step === 0 || i === sortedTimestamps.length - 1);
+  }
+  
+  const formatTime = TIMEFRAME_FORMAT[timeframe];
+  let maxY = 0;
+  
+  const chartData: Record<string, string | number>[] = timestamps.map(timestamp => {
+    const date = new Date(timestamp * 1000);
+    const point: Record<string, string | number> = {
+      time: formatTime(date),
+    };
+    
+    outcomes.forEach(outcome => {
+      const history = priceHistory[outcome.title] || [];
+      
+      // Find the closest price point to this timestamp
+      let price = outcome.odds; // fallback to current odds
+      
+      // Binary search or linear search for closest timestamp
+      for (let i = 0; i < history.length; i++) {
+        if (history[i].timestamp <= timestamp) {
+          price = history[i].price;
+        } else {
+          break;
+        }
+      }
+      
+      // If no data before this timestamp, use the first available
+      if (history.length > 0 && history[0].timestamp > timestamp) {
+        price = history[0].price;
+      }
+      
+      const odds = price * 100;
+      point[outcome.title] = Number(odds.toFixed(1));
+      maxY = Math.max(maxY, odds);
+    });
+    
+    return point;
+  });
+  
+  // Ensure maxY has some padding
+  maxY = Math.max(maxY * 1.1, 20);
+  
+  return { chartData, maxY };
+}
+
+// Timeframe configuration for simulated chart data
+const SIMULATED_TIMEFRAME_CONFIG: Record<Timeframe, { 
+  numPoints: number; 
+  intervalMinutes: number; 
+  formatTime: (date: Date) => string;
+  volatilityScale: number;
+  trendVariance: number;
+}> = {
+  '1D': {
+    numPoints: 48,
+    intervalMinutes: 30,
+    formatTime: (date) => date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+    volatilityScale: 1,
+    trendVariance: 30,
+  },
+  '1W': {
+    numPoints: 42,
+    intervalMinutes: 60 * 4,
+    formatTime: (date) => date.toLocaleDateString('en-US', { weekday: 'short', hour: 'numeric', hour12: true }),
+    volatilityScale: 1.5,
+    trendVariance: 40,
+  },
+  '1M': {
+    numPoints: 30,
+    intervalMinutes: 60 * 24,
+    formatTime: (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    volatilityScale: 2,
+    trendVariance: 50,
+  },
+  'ALL': {
+    numPoints: 52,
+    intervalMinutes: 60 * 24 * 7,
+    formatTime: (date) => date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    volatilityScale: 3,
+    trendVariance: 60,
+  },
+};
+
+function generateSimulatedChartData(market: GroupedMarket, timeframe: Timeframe): { chartData: Record<string, string | number>[]; maxY: number } {
+  const data: Record<string, string | number>[] = [];
+  const outcomes = market.outcomes.slice(0, 6);
+  const config = SIMULATED_TIMEFRAME_CONFIG[timeframe];
+  
+  let maxY = 0;
+  
+  const { numPoints, intervalMinutes, formatTime, volatilityScale, trendVariance } = config;
+  
+  let seed = hashCode(market.eventId + timeframe);
+  const seededRandom = () => {
+    seed++;
+    const x = Math.sin(seed) * 10000;
+    return x - Math.floor(x);
+  };
+  
+  const outcomeData = outcomes.map((outcome) => {
+    const currentOdds = outcome.odds * 100;
+    const startingOdds = Math.max(1, Math.min(99, currentOdds + (seededRandom() - 0.5) * trendVariance));
+    return {
+      title: outcome.title,
+      currentOdds,
+      startingOdds,
+      trendPerPoint: (currentOdds - startingOdds) / numPoints,
+      phaseOffset: seededRandom() * Math.PI * 2,
+    };
+  });
+  
+  for (let i = 0; i < numPoints; i++) {
+    const time = new Date();
+    time.setMinutes(time.getMinutes() - (numPoints - i) * intervalMinutes);
+    
+    const point: Record<string, string | number> = {
+      time: formatTime(time),
+    };
+    
+    outcomeData.forEach(({ title, startingOdds, trendPerPoint, currentOdds, phaseOffset }) => {
+      let odds = startingOdds + (trendPerPoint * i);
+      
+      const volatilityFactor = 1 - (i / numPoints) * 0.7;
+      const noise = (Math.sin(i * 0.3 + phaseOffset) * 5 + Math.cos(i * 0.7 + phaseOffset) * 3) * volatilityFactor * volatilityScale;
+      const randomNoise = (seededRandom() - 0.5) * 4 * volatilityFactor * volatilityScale;
+      
+      odds = odds + noise + randomNoise;
+      
+      if (i === numPoints - 1) {
+        odds = currentOdds;
+      }
+      
+      odds = Math.max(0.5, Math.min(99.5, odds));
+      
+      point[title] = Number(odds.toFixed(1));
+      maxY = Math.max(maxY, odds);
+    });
+    
+    data.push(point);
+  }
+  
+  maxY = Math.max(maxY * 1.1, 20);
+  
+  return { chartData: data, maxY };
+}
+
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash);
+}
+
+function formatNumber(num: number): string {
+  if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+  if (num >= 1_000) return (num / 1_000).toFixed(1) + 'K';
+  return num.toFixed(0);
+}
